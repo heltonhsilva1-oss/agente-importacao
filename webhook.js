@@ -8,6 +8,18 @@ const { handleMessage } = require('./menu');
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
 
+// Deduplicação: guarda IDs de mensagens processadas nos últimos 30 segundos
+const processedIds = new Map();
+function isDuplicate(id) {
+  if (!id) return false;
+  if (processedIds.has(id)) return true;
+  processedIds.set(id, Date.now());
+  // Limpa entradas com mais de 30 segundos
+  const cutoff = Date.now() - 30000;
+  for (const [k, v] of processedIds) if (v < cutoff) processedIds.delete(k);
+  return false;
+}
+
 // Envia texto direto via Uazapi (sem passar pelo menu)
 async function notifyOperator(text) {
   try {
@@ -141,6 +153,13 @@ function setupWebhook(app) {
       const phoneDigits = (phone + '').replace(/\D/g, '');
       const agentDigits = (AGENT_PHONE + '').replace(/\D/g, '');
       if (phoneDigits === agentDigits || phoneDigits.endsWith(agentDigits)) return;
+
+      // Deduplicação: ignora se a mesma mensagem já foi processada
+      const msgId = raw.message?.id || raw.message?.messageid || raw.id || '';
+      if (msgId && isDuplicate(msgId)) {
+        logger.info(`[webhook] Duplicata ignorada: ${msgId}`);
+        return;
+      }
 
       await handleMessage(phone, type, body, mediaUrl, mimeType);
     } catch (err) {
