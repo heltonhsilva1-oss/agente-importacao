@@ -1,6 +1,6 @@
 'use strict';
-// Funções de envio de mensagens via Uazapi WhatsApp API
-// Docs da Uazapi: ajuste os endpoints se sua versão usar paths diferentes
+// Funções de envio de mensagens via Uazapi
+// Endpoints descobertos: POST /send/text  POST /send/image  POST /send/document
 
 const axios = require('axios');
 const { getFirestore, Timestamp } = require('firebase-admin/firestore');
@@ -40,7 +40,7 @@ async function queueMensagem(phone, data) {
 }
 
 // Envia mensagem de texto
-// forceNow=true ignora horário comercial (usado em respostas interativas)
+// forceNow=true ignora horário comercial (respostas interativas ao cliente)
 async function sendText(phone, message, forceNow = false) {
   if (!forceNow && !isHoraComercial()) {
     await queueMensagem(phone, { tipo: 'text', mensagem: message });
@@ -49,19 +49,18 @@ async function sendText(phone, message, forceNow = false) {
   }
   try {
     await axios.post(
-      `${baseUrl()}/message/sendText`,
-      { phone, message },
+      `${baseUrl()}/send/text`,
+      { number: phone, text: message },
       { headers: headers(), timeout: 15000 }
     );
     logger.info(`[uazapi] Texto enviado → ${phone}`);
   } catch (err) {
-    logger.error(`[uazapi] Erro ao enviar texto para ${phone}:`, err.message);
+    logger.error(`[uazapi] Erro ao enviar texto para ${phone}:`, err.response?.data || err.message);
     throw err;
   }
 }
 
-// Envia mídia (imagem ou documento) via URL
-// mimeType indica se é imagem ou documento PDF
+// Envia mídia (imagem ou documento PDF) via URL
 async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = false) {
   if (!forceNow && !isHoraComercial()) {
     await queueMensagem(phone, { tipo: 'media', mediaUrl, mimeType, caption });
@@ -77,20 +76,20 @@ async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = fal
 
     if (isPdf) {
       await axios.post(
-        `${baseUrl()}/message/sendDocument`,
-        { phone, document: mediaUrl, fileName: 'documento.pdf', caption },
+        `${baseUrl()}/send/document`,
+        { number: phone, document: mediaUrl, filename: 'documento.pdf', caption },
         { headers: headers(), timeout: 20000 }
       );
     } else {
       await axios.post(
-        `${baseUrl()}/message/sendImage`,
-        { phone, image: mediaUrl, caption },
+        `${baseUrl()}/send/image`,
+        { number: phone, image: mediaUrl, caption },
         { headers: headers(), timeout: 20000 }
       );
     }
-    logger.info(`[uazapi] Mídia enviada → ${phone} (${mimeType})`);
+    logger.info(`[uazapi] Mídia enviada → ${phone}`);
   } catch (err) {
-    logger.error(`[uazapi] Erro ao enviar mídia para ${phone}:`, err.message);
+    logger.error(`[uazapi] Erro ao enviar mídia para ${phone}:`, err.response?.data || err.message);
     throw err;
   }
 }

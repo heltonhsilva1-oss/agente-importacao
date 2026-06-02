@@ -8,6 +8,23 @@ const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
 
 // Normaliza os diferentes formatos de payload da Uazapi para uma estrutura comum
 function parsePayload(body) {
+  // Formato Uazapi GO (formato nativo): { phone/chatid, text, messageType, fromMe, sender }
+  if (body?.owner || body?.sender) {
+    const phone = body.phone || (body.chatid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
+    const isFromMe = body.fromMe === true;
+    let type = (body.messageType || 'text').toLowerCase().replace('message', '').trim() || 'text';
+    if (type === 'conversation' || type === 'extendedtext') type = 'text';
+
+    return {
+      phone,
+      body: body.text || body.caption || '',
+      type,
+      mediaUrl: body.mediaUrl || body.fileUrl || null,
+      mimeType: body.mimetype || body.mimeType || null,
+      isFromMe,
+    };
+  }
+
   // Formato A (Uazapi v2): { event, data: { key, message, messageType, phone } }
   if (body?.data?.key) {
     const d = body.data;
