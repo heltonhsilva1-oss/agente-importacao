@@ -38,30 +38,29 @@ function parsePayload(raw) {
   if (raw.BaseUrl || raw.EventType) {
     const msg = raw.message || {};
 
-    // Determina o identificador correto para responder:
-    // - @lid  → número de business do WhatsApp: usa o LID completo (ex: 266537751552115@lid)
-    // - @s.whatsapp.net → número normal: extrai só os dígitos
-    // - sem sufixo → tenta como número de telefone
-    const sender = msg.sender || msg.jid || msg.remoteJid || '';
-    let phone;
-    if (sender.includes('@lid')) {
-      phone = sender; // mantém o formato LID completo para envio
-    } else if (sender.includes('@s.whatsapp.net') || sender.includes('@c.us')) {
-      phone = sender.replace(/@[^@]+$/, '').replace(/\D/g, '');
-    } else {
-      phone = msg.phone || msg.number || sender.replace(/@[^@]+$/, '');
-    }
+    // sender_pn tem o número real (ex: 5511969646851@s.whatsapp.net)
+    // sender tem o LID (ex: 266537751552115@lid)
+    // Preferimos sender_pn para ter o número de telefone real para Firestore
+    const senderPn = (msg.sender_pn || '').replace(/@[^@]+$/, ''); // "5511969646851"
+    const senderLid = msg.sender || msg.chatlid || '';
+    const phone = senderPn || (senderLid.includes('@lid') ? senderLid : senderLid.replace(/@[^@]+$/, '').replace(/\D/g, ''));
 
-    let type = (msg.messageType || msg.type || 'text').toLowerCase()
+    let type = (msg.messageType || msg.type || msg.mediaType || 'text').toLowerCase()
       .replace('message', '').replace('msg', '').trim() || 'text';
     if (['conversation', 'extendedtext', ''].includes(type)) type = 'text';
+    if (type === 'media') type = msg.mediaType?.toLowerCase() || 'image';
+
+    // URL da mídia fica em content.URL (maiúsculo) no Uazapi GO
+    const content = msg.content || {};
+    const mediaUrl = content.URL || content.url || msg.mediaUrl || msg.fileUrl || null;
+    const mimeType = content.mimetype || content.mimeType || msg.mimetype || null;
 
     return {
       phone,
-      body:     String(msg.text || msg.body || msg.caption || ''),
+      body:     String(msg.text || msg.body || msg.caption || content.caption || ''),
       type,
-      mediaUrl: msg.mediaUrl || msg.fileUrl || msg.imageUrl || null,
-      mimeType: msg.mimetype || msg.mimeType || null,
+      mediaUrl,
+      mimeType,
       isFromMe: msg.fromMe === true || msg.isFromMe === true,
     };
   }
