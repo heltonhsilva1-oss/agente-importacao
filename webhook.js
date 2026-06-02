@@ -95,9 +95,26 @@ function parsePayload(body) {
 }
 
 function setupWebhook(app) {
+  // Endpoint de debug — envia o payload bruto pro WhatsApp do operador
+  app.post('/debug-webhook', async (req, res) => {
+    res.status(200).json({ ok: true });
+    try {
+      const axios = require('axios');
+      const payload = JSON.stringify(req.body, null, 2).slice(0, 1500);
+      await axios.post(
+        `${process.env.UAZAPI_SERVER_URL}/send/text`,
+        { number: process.env.OPERATOR_PHONE || '5511995715042', text: `📦 PAYLOAD RECEBIDO:\n${payload}` },
+        { headers: { token: process.env.UAZAPI_INSTANCE_TOKEN, 'Content-Type': 'application/json' }, timeout: 10000 }
+      );
+    } catch (e) { logger.error('[debug]', e.message); }
+  });
+
   app.post('/webhook', async (req, res) => {
     // Responde imediatamente para evitar timeout da Uazapi
     res.status(200).json({ ok: true });
+
+    // Loga o payload bruto para diagnóstico
+    logger.info('[webhook] payload bruto:', JSON.stringify(req.body).slice(0, 500));
 
     try {
       const parsed = parsePayload(req.body);
