@@ -117,6 +117,8 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
       await sendText(phone, 'Por favor, envie a foto, print ou PDF da nota fiscal.', true);
       return;
     }
+    // Limpa estado PRIMEIRO para evitar loop caso algo falhe depois
+    await clearConversa(phone);
     // Confirmação ao cliente
     await sendText(phone, '✅ Nota recebida! Em breve será cadastrada no sistema.', true);
     // Encaminhar tudo ao operador
@@ -127,7 +129,6 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
       `Vendedor: ${dados.vendedor}`;
     await sendText(OPERATOR_PHONE, msgOp, true);
     await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
-    await clearConversa(phone);
   }
 }
 

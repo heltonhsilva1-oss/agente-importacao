@@ -137,6 +137,11 @@ function setupWebhook(app) {
       if (!phone)                          return;
       if ((phone + '').includes('@g.us'))  return; // grupo
 
+      // Proteção anti-loop: ignora mensagens do próprio número do agente
+      const phoneDigits = (phone + '').replace(/\D/g, '');
+      const agentDigits = (AGENT_PHONE + '').replace(/\D/g, '');
+      if (phoneDigits === agentDigits || phoneDigits.endsWith(agentDigits)) return;
+
       await handleMessage(phone, type, body, mediaUrl, mimeType);
     } catch (err) {
       logger.error('[webhook] Erro:', err.message, err.stack?.slice(0, 300));
