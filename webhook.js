@@ -21,20 +21,42 @@ async function notifyOperator(text) {
 
 // Extrai phone, body, type, mediaUrl, mimeType e isFromMe de qualquer formato Uazapi
 function parsePayload(raw) {
-  // ── Formato Uazapi GO (nativo) ─────────────────────────────────────────────
-  // { owner, sender, text, messageType, fromMe, phone, chatid, ... }
-  if (raw.owner || raw.sender) {
-    const phone = raw.phone
-      || (raw.chatid  || '').replace(/@s\.whatsapp\.net|@c\.us/g, '')
-      || (raw.sender  || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
+  // ── Formato Uazapi GO webhook global ───────────────────────────────────────
+  // { BaseUrl, EventType, chat, message: { phone, text, fromMe, mediaUrl, ... } }
+  if (raw.BaseUrl || raw.EventType) {
+    const msg = raw.message || {};
+    const phone = msg.phone
+      || (msg.sender || '').replace(/@s\.whatsapp\.net|@c\.us/g, '')
+      || (msg.chatid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
 
-    let type = (raw.messageType || 'text').toLowerCase()
+    let type = (msg.messageType || msg.type || 'text').toLowerCase()
       .replace('message', '').replace('msg', '').trim() || 'text';
-    if (['conversation', 'extendedtext', 'text'].includes(type)) type = 'text';
+    if (['conversation', 'extendedtext', ''].includes(type)) type = 'text';
 
     return {
       phone,
-      body:     raw.text || raw.body || raw.caption || raw.message || '',
+      body:     String(msg.text || msg.body || msg.caption || ''),
+      type,
+      mediaUrl: msg.mediaUrl || msg.fileUrl || msg.imageUrl || null,
+      mimeType: msg.mimetype || msg.mimeType || null,
+      isFromMe: msg.fromMe === true || msg.isFromMe === true,
+    };
+  }
+
+  // ── Formato Uazapi GO (nativo plano) ──────────────────────────────────────
+  // { owner, sender, text, messageType, fromMe, phone, chatid, ... }
+  if (raw.owner || raw.sender) {
+    const phone = raw.phone
+      || (raw.chatid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '')
+      || (raw.sender || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
+
+    let type = (raw.messageType || 'text').toLowerCase()
+      .replace('message', '').replace('msg', '').trim() || 'text';
+    if (['conversation', 'extendedtext', ''].includes(type)) type = 'text';
+
+    return {
+      phone,
+      body:     String(raw.text || raw.body || raw.caption || ''),
       type,
       mediaUrl: raw.mediaUrl || raw.fileUrl || raw.imageUrl || null,
       mimeType: raw.mimetype || raw.mimeType || null,
@@ -50,23 +72,22 @@ function parsePayload(raw) {
       || (d.key?.remoteJid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
 
     let body_ = '', type = 'text', mediaUrl = null, mimeType = null;
+    if (msg.conversation)                   { body_ = msg.conversation; }
+    else if (msg.extendedTextMessage?.text) { body_ = msg.extendedTextMessage.text; }
+    else if (msg.imageMessage)    { body_ = msg.imageMessage.caption    || ''; mediaUrl = msg.imageMessage.url;    mimeType = msg.imageMessage.mimetype    || 'image/jpeg';       type = 'image'; }
+    else if (msg.documentMessage) { body_ = msg.documentMessage.caption || ''; mediaUrl = msg.documentMessage.url; mimeType = msg.documentMessage.mimetype || 'application/pdf';  type = 'document'; }
+    else if (msg.audioMessage)    { type = 'audio'; }
+    else if (msg.videoMessage)    { body_ = msg.videoMessage.caption    || ''; mediaUrl = msg.videoMessage.url;    mimeType = msg.videoMessage.mimetype    || 'video/mp4';         type = 'video'; }
 
-    if (msg.conversation)                  { body_ = msg.conversation; }
-    else if (msg.extendedTextMessage?.text){ body_ = msg.extendedTextMessage.text; }
-    else if (msg.imageMessage)   { body_ = msg.imageMessage.caption   || ''; mediaUrl = msg.imageMessage.url;    mimeType = msg.imageMessage.mimetype    || 'image/jpeg'; type = 'image'; }
-    else if (msg.documentMessage){ body_ = msg.documentMessage.caption|| ''; mediaUrl = msg.documentMessage.url; mimeType = msg.documentMessage.mimetype || 'application/pdf'; type = 'document'; }
-    else if (msg.audioMessage)   { type = 'audio'; }
-    else if (msg.videoMessage)   { body_ = msg.videoMessage.caption   || ''; mediaUrl = msg.videoMessage.url;    mimeType = msg.videoMessage.mimetype    || 'video/mp4'; type = 'video'; }
-
-    return { phone, body: body_, type, mediaUrl, mimeType, isFromMe: d.key?.fromMe === true };
+    return { phone, body: String(body_), type, mediaUrl, mimeType, isFromMe: d.key?.fromMe === true };
   }
 
-  // ── Formato plano { phone/number, body/text/message, type } ───────────────
+  // ── Formato plano { phone/number, body/text, type } ───────────────────────
   if (raw.phone || raw.number) {
     return {
       phone:    raw.phone || raw.number,
-      body:     raw.body  || raw.text || raw.message || raw.caption || '',
-      type:     raw.type  || 'text',
+      body:     String(raw.body || raw.text || raw.message || raw.caption || ''),
+      type:     raw.type || 'text',
       mediaUrl: raw.mediaUrl || null,
       mimeType: raw.mimeType || null,
       isFromMe: raw.isFromMe === true || raw.fromMe === true,
