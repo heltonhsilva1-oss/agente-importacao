@@ -1,93 +1,75 @@
 'use strict';
 // Rota Express que recebe webhooks da Uazapi
 
+const axios = require('axios');
 const { logger } = require('./logger');
 const { handleMessage } = require('./menu');
 
-const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
+const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
+const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
 
-// Normaliza os diferentes formatos de payload da Uazapi para uma estrutura comum
-function parsePayload(body) {
-  // Formato Uazapi GO (formato nativo): { phone/chatid, text, messageType, fromMe, sender }
-  if (body?.owner || body?.sender) {
-    const phone = body.phone || (body.chatid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
-    const isFromMe = body.fromMe === true;
-    let type = (body.messageType || 'text').toLowerCase().replace('message', '').trim() || 'text';
-    if (type === 'conversation' || type === 'extendedtext') type = 'text';
+// Envia texto direto via Uazapi (sem passar pelo menu)
+async function notifyOperator(text) {
+  try {
+    await axios.post(
+      `${process.env.UAZAPI_SERVER_URL}/send/text`,
+      { number: OPERATOR_PHONE, text },
+      { headers: { token: process.env.UAZAPI_INSTANCE_TOKEN, 'Content-Type': 'application/json' }, timeout: 8000 }
+    );
+  } catch (_) {}
+}
+
+// Extrai phone, body, type, mediaUrl, mimeType e isFromMe de qualquer formato Uazapi
+function parsePayload(raw) {
+  // ── Formato Uazapi GO (nativo) ─────────────────────────────────────────────
+  // { owner, sender, text, messageType, fromMe, phone, chatid, ... }
+  if (raw.owner || raw.sender) {
+    const phone = raw.phone
+      || (raw.chatid  || '').replace(/@s\.whatsapp\.net|@c\.us/g, '')
+      || (raw.sender  || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
+
+    let type = (raw.messageType || 'text').toLowerCase()
+      .replace('message', '').replace('msg', '').trim() || 'text';
+    if (['conversation', 'extendedtext', 'text'].includes(type)) type = 'text';
 
     return {
       phone,
-      body: body.text || body.caption || '',
+      body:     raw.text || raw.body || raw.caption || raw.message || '',
       type,
-      mediaUrl: body.mediaUrl || body.fileUrl || null,
-      mimeType: body.mimetype || body.mimeType || null,
-      isFromMe,
+      mediaUrl: raw.mediaUrl || raw.fileUrl || raw.imageUrl || null,
+      mimeType: raw.mimetype || raw.mimeType || null,
+      isFromMe: raw.fromMe === true,
     };
   }
 
-  // Formato A (Uazapi v2): { event, data: { key, message, messageType, phone } }
-  if (body?.data?.key) {
-    const d = body.data;
-    const raw = d.key?.remoteJid || '';
-    const phone = d.phone || raw.replace(/@s\.whatsapp\.net|@c\.us/g, '');
-    const isFromMe = d.key?.fromMe === true;
+  // ── Formato com data.key (Baileys / Uazapi v2 antigo) ─────────────────────
+  if (raw.data?.key) {
+    const d   = raw.data;
     const msg = d.message || {};
+    const phone = d.phone
+      || (d.key?.remoteJid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
 
-    let body_ = '';
-    let type = d.messageType || 'text';
-    let mediaUrl = null;
-    let mimeType = null;
+    let body_ = '', type = 'text', mediaUrl = null, mimeType = null;
 
-    if (msg.conversation) {
-      body_ = msg.conversation;
-      type = 'text';
-    } else if (msg.extendedTextMessage?.text) {
-      body_ = msg.extendedTextMessage.text;
-      type = 'text';
-    } else if (msg.imageMessage) {
-      body_ = msg.imageMessage.caption || '';
-      mediaUrl = msg.imageMessage.url || null;
-      mimeType = msg.imageMessage.mimetype || 'image/jpeg';
-      type = 'image';
-    } else if (msg.documentMessage) {
-      body_ = msg.documentMessage.caption || '';
-      mediaUrl = msg.documentMessage.url || null;
-      mimeType = msg.documentMessage.mimetype || 'application/pdf';
-      type = 'document';
-    } else if (msg.audioMessage) {
-      type = 'audio';
-    } else if (msg.videoMessage) {
-      body_ = msg.videoMessage.caption || '';
-      mediaUrl = msg.videoMessage.url || null;
-      mimeType = msg.videoMessage.mimetype || 'video/mp4';
-      type = 'video';
-    }
+    if (msg.conversation)                  { body_ = msg.conversation; }
+    else if (msg.extendedTextMessage?.text){ body_ = msg.extendedTextMessage.text; }
+    else if (msg.imageMessage)   { body_ = msg.imageMessage.caption   || ''; mediaUrl = msg.imageMessage.url;    mimeType = msg.imageMessage.mimetype    || 'image/jpeg'; type = 'image'; }
+    else if (msg.documentMessage){ body_ = msg.documentMessage.caption|| ''; mediaUrl = msg.documentMessage.url; mimeType = msg.documentMessage.mimetype || 'application/pdf'; type = 'document'; }
+    else if (msg.audioMessage)   { type = 'audio'; }
+    else if (msg.videoMessage)   { body_ = msg.videoMessage.caption   || ''; mediaUrl = msg.videoMessage.url;    mimeType = msg.videoMessage.mimetype    || 'video/mp4'; type = 'video'; }
 
-    return { phone, body: body_, type, mediaUrl, mimeType, isFromMe };
+    return { phone, body: body_, type, mediaUrl, mimeType, isFromMe: d.key?.fromMe === true };
   }
 
-  // Formato B (Uazapi v1): { type, data: { phone, body, type, mediaUrl, isFromMe } }
-  if (body?.data?.phone) {
-    const d = body.data;
+  // ── Formato plano { phone/number, body/text/message, type } ───────────────
+  if (raw.phone || raw.number) {
     return {
-      phone: d.phone,
-      body: d.body || d.message || '',
-      type: d.type || 'text',
-      mediaUrl: d.mediaUrl || null,
-      mimeType: d.mimeType || null,
-      isFromMe: d.isFromMe === true,
-    };
-  }
-
-  // Formato C: payload plano { phone, body, type, ... }
-  if (body?.phone) {
-    return {
-      phone: body.phone,
-      body: body.body || body.message || '',
-      type: body.type || 'text',
-      mediaUrl: body.mediaUrl || null,
-      mimeType: body.mimeType || null,
-      isFromMe: body.isFromMe === true,
+      phone:    raw.phone || raw.number,
+      body:     raw.body  || raw.text || raw.message || raw.caption || '',
+      type:     raw.type  || 'text',
+      mediaUrl: raw.mediaUrl || null,
+      mimeType: raw.mimeType || null,
+      isFromMe: raw.isFromMe === true || raw.fromMe === true,
     };
   }
 
@@ -95,61 +77,47 @@ function parsePayload(body) {
 }
 
 function setupWebhook(app) {
-  // Endpoint de debug — envia o payload bruto pro WhatsApp do operador
-  app.post('/debug-webhook', async (req, res) => {
-    res.status(200).json({ ok: true });
-    try {
-      const axios = require('axios');
-      const payload = JSON.stringify(req.body, null, 2).slice(0, 1500);
-      await axios.post(
-        `${process.env.UAZAPI_SERVER_URL}/send/text`,
-        { number: process.env.OPERATOR_PHONE || '5511995715042', text: `📦 PAYLOAD RECEBIDO:\n${payload}` },
-        { headers: { token: process.env.UAZAPI_INSTANCE_TOKEN, 'Content-Type': 'application/json' }, timeout: 10000 }
-      );
-    } catch (e) { logger.error('[debug]', e.message); }
-  });
-
+  // ── Rota principal ─────────────────────────────────────────────────────────
   app.post('/webhook', async (req, res) => {
-    // Responde imediatamente para evitar timeout da Uazapi
-    res.status(200).json({ ok: true });
+    res.status(200).json({ ok: true }); // responde rápido
 
-    // DEBUG TEMPORÁRIO: encaminha payload bruto para o operador
-    try {
-      const axios = require('axios');
-      const payload = JSON.stringify(req.body, null, 2).slice(0, 1200);
-      await axios.post(
-        `${process.env.UAZAPI_SERVER_URL}/send/text`,
-        { number: process.env.OPERATOR_PHONE || '5511995715042', text: `📦 WEBHOOK RECEBIDO:\n${payload}` },
-        { headers: { token: process.env.UAZAPI_INSTANCE_TOKEN, 'Content-Type': 'application/json' }, timeout: 8000 }
-      ).catch(() => {});
-    } catch (_) {}
+    const raw = req.body;
+    logger.info('[webhook] payload:', JSON.stringify(raw).slice(0, 600));
 
-    // Loga o payload bruto para diagnóstico
-    logger.info('[webhook] payload bruto:', JSON.stringify(req.body).slice(0, 500));
+    // Encaminha o payload bruto ao operador para diagnóstico (remova após confirmar funcionamento)
+    const payloadStr = JSON.stringify(raw, null, 2).slice(0, 1200);
+    await notifyOperator(`📦 WEBHOOK:\n${payloadStr}`);
 
     try {
-      const parsed = parsePayload(req.body);
+      const parsed = parsePayload(raw);
 
       if (!parsed) {
-        logger.warn('[webhook] Payload não reconhecido:', JSON.stringify(req.body).slice(0, 300));
+        logger.warn('[webhook] Formato não reconhecido');
         return;
       }
 
       const { phone, body, type, mediaUrl, mimeType, isFromMe } = parsed;
 
-      if (isFromMe) return;
-      if (!phone || phone.includes('@g.us')) return; // grupo, ignora
+      logger.info(`[webhook] phone=${phone} type=${type} fromMe=${isFromMe} body="${(body||'').slice(0,60)}"`);
 
-      logger.info(`[webhook] ${phone} | ${type} | "${(body || '').slice(0, 60)}"`);
+      if (isFromMe)                        return; // mensagem enviada pelo agente
+      if (!phone)                          return;
+      if ((phone + '').includes('@g.us'))  return; // grupo
 
       await handleMessage(phone, type, body, mediaUrl, mimeType);
     } catch (err) {
-      logger.error('[webhook] Erro ao processar mensagem:', err);
+      logger.error('[webhook] Erro:', err.message, err.stack?.slice(0, 300));
     }
   });
 
-  // Health check para o Railway
-  app.get('/health', (_req, res) => res.json({ ok: true }));
+  // ── Health check ───────────────────────────────────────────────────────────
+  app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+  // ── Echo de teste ──────────────────────────────────────────────────────────
+  app.post('/echo', (req, res) => {
+    logger.info('[echo]', JSON.stringify(req.body));
+    res.json({ received: req.body });
+  });
 }
 
 module.exports = { setupWebhook };
