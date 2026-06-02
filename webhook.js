@@ -112,7 +112,8 @@ function setupWebhook(app) {
     res.status(200).json({ ok: true }); // responde rápido
 
     const raw = req.body;
-    logger.info('[webhook] payload completo:', JSON.stringify(raw).slice(0, 2000));
+    logger.info('[webhook] message obj:', JSON.stringify(raw.message || raw).slice(0, 2000));
+    logger.info('[webhook] chat.id:', raw.chat?.id, '| chat.number:', raw.chat?.number, '| chat.phone:', raw.chat?.phone);
 
     // Encaminha o payload bruto ao operador para diagnóstico (remova após confirmar funcionamento)
     const payloadStr = JSON.stringify(raw, null, 2).slice(0, 1200);
