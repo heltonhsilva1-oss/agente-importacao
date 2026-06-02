@@ -113,6 +113,17 @@ function setupWebhook(app) {
     // Responde imediatamente para evitar timeout da Uazapi
     res.status(200).json({ ok: true });
 
+    // DEBUG TEMPORÁRIO: encaminha payload bruto para o operador
+    try {
+      const axios = require('axios');
+      const payload = JSON.stringify(req.body, null, 2).slice(0, 1200);
+      await axios.post(
+        `${process.env.UAZAPI_SERVER_URL}/send/text`,
+        { number: process.env.OPERATOR_PHONE || '5511995715042', text: `📦 WEBHOOK RECEBIDO:\n${payload}` },
+        { headers: { token: process.env.UAZAPI_INSTANCE_TOKEN, 'Content-Type': 'application/json' }, timeout: 8000 }
+      ).catch(() => {});
+    } catch (_) {}
+
     // Loga o payload bruto para diagnóstico
     logger.info('[webhook] payload bruto:', JSON.stringify(req.body).slice(0, 500));
 
