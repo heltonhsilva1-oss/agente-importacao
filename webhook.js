@@ -126,8 +126,9 @@ function setupWebhook(app) {
     res.status(200).json({ ok: true }); // responde rápido
 
     const raw = req.body;
-    logger.info('[webhook] message obj:', JSON.stringify(raw.message || raw).slice(0, 2000));
-    logger.info('[webhook] chat.id:', raw.chat?.id, '| chat.number:', raw.chat?.number, '| chat.phone:', raw.chat?.phone);
+    // Loga payload completo para mensagens de mídia (para descobrir campo da URL)
+    const isMedia = raw.message?.messageType && !['Conversation','ExtendedTextMessage','conversation','text'].includes(raw.message.messageType);
+    if (isMedia) logger.info('[webhook] MIDIA payload:', JSON.stringify(raw.message).slice(0, 3000));
 
     // Encaminha o payload bruto ao operador para diagnóstico (remova após confirmar funcionamento)
     const payloadStr = JSON.stringify(raw, null, 2).slice(0, 1200);
