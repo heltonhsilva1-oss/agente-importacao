@@ -26,16 +26,18 @@ function parsePayload(raw) {
   if (raw.BaseUrl || raw.EventType) {
     const msg = raw.message || {};
 
-    // Remove todos os sufixos WhatsApp (@s.whatsapp.net, @c.us, @lid, etc.)
-    const stripSuffix = (s) => (s || '').replace(/@[^@]+$/, '').replace(/\D/g, '');
-
-    // O número real pode estar em phone, number, ou precisar ser derivado do sender
-    // Ignoramos endereços @lid (LID do WhatsApp Business) sem número real
-    let phone = msg.phone || msg.number || '';
-    if (!phone || phone.includes('@lid') || phone.length > 15) {
-      phone = stripSuffix(msg.sender || msg.chatid || '');
+    // Determina o identificador correto para responder:
+    // - @lid  → número de business do WhatsApp: usa o LID completo (ex: 266537751552115@lid)
+    // - @s.whatsapp.net → número normal: extrai só os dígitos
+    // - sem sufixo → tenta como número de telefone
+    const sender = msg.sender || msg.jid || msg.remoteJid || '';
+    let phone;
+    if (sender.includes('@lid')) {
+      phone = sender; // mantém o formato LID completo para envio
+    } else if (sender.includes('@s.whatsapp.net') || sender.includes('@c.us')) {
+      phone = sender.replace(/@[^@]+$/, '').replace(/\D/g, '');
     } else {
-      phone = phone.replace(/\D/g, '');
+      phone = msg.phone || msg.number || sender.replace(/@[^@]+$/, '');
     }
 
     let type = (msg.messageType || msg.type || 'text').toLowerCase()

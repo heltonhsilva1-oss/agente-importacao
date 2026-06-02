@@ -36,6 +36,8 @@ function normCpf(s) {
 }
 
 function normalizePhone(phone) {
+  // LID ou JID com sufixo (@lid, @s.whatsapp.net) → usa como está
+  if ((phone || '').includes('@')) return phone;
   const d = (phone || '').replace(/\D/g, '');
   if (d.startsWith('55') && d.length >= 12) return d;
   return `55${d}`;
