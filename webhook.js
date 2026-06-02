@@ -25,9 +25,18 @@ function parsePayload(raw) {
   // { BaseUrl, EventType, chat, message: { phone, text, fromMe, mediaUrl, ... } }
   if (raw.BaseUrl || raw.EventType) {
     const msg = raw.message || {};
-    const phone = msg.phone
-      || (msg.sender || '').replace(/@s\.whatsapp\.net|@c\.us/g, '')
-      || (msg.chatid || '').replace(/@s\.whatsapp\.net|@c\.us/g, '');
+
+    // Remove todos os sufixos WhatsApp (@s.whatsapp.net, @c.us, @lid, etc.)
+    const stripSuffix = (s) => (s || '').replace(/@[^@]+$/, '').replace(/\D/g, '');
+
+    // O número real pode estar em phone, number, ou precisar ser derivado do sender
+    // Ignoramos endereços @lid (LID do WhatsApp Business) sem número real
+    let phone = msg.phone || msg.number || '';
+    if (!phone || phone.includes('@lid') || phone.length > 15) {
+      phone = stripSuffix(msg.sender || msg.chatid || '');
+    } else {
+      phone = phone.replace(/\D/g, '');
+    }
 
     let type = (msg.messageType || msg.type || 'text').toLowerCase()
       .replace('message', '').replace('msg', '').trim() || 'text';
@@ -103,7 +112,7 @@ function setupWebhook(app) {
     res.status(200).json({ ok: true }); // responde rápido
 
     const raw = req.body;
-    logger.info('[webhook] payload:', JSON.stringify(raw).slice(0, 600));
+    logger.info('[webhook] payload completo:', JSON.stringify(raw).slice(0, 2000));
 
     // Encaminha o payload bruto ao operador para diagnóstico (remova após confirmar funcionamento)
     const payloadStr = JSON.stringify(raw, null, 2).slice(0, 1200);

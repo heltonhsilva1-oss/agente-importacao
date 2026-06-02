@@ -7,7 +7,7 @@ const { getFirestore, Timestamp } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 
 function baseUrl() {
-  return process.env.UAZAPI_SERVER_URL;
+  return (process.env.UAZAPI_SERVER_URL || '').replace(/\/$/, '');
 }
 
 function headers() {
@@ -42,6 +42,8 @@ async function queueMensagem(phone, data) {
 // Envia mensagem de texto
 // forceNow=true ignora horário comercial (respostas interativas ao cliente)
 async function sendText(phone, message, forceNow = false) {
+  const url = baseUrl();
+  if (!url) { logger.error('[uazapi] UAZAPI_SERVER_URL não configurado!'); return; }
   if (!forceNow && !isHoraComercial()) {
     await queueMensagem(phone, { tipo: 'text', mensagem: message });
     logger.info(`[uazapi] Texto enfileirado para ${phone} (fora do horário)`);
@@ -49,7 +51,7 @@ async function sendText(phone, message, forceNow = false) {
   }
   try {
     await axios.post(
-      `${baseUrl()}/send/text`,
+      `${url}/send/text`,
       { number: phone, text: message },
       { headers: headers(), timeout: 15000 }
     );
@@ -62,6 +64,8 @@ async function sendText(phone, message, forceNow = false) {
 
 // Envia mídia (imagem ou documento PDF) via URL
 async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = false) {
+  const url = baseUrl();
+  if (!url) { logger.error('[uazapi] UAZAPI_SERVER_URL não configurado!'); return; }
   if (!forceNow && !isHoraComercial()) {
     await queueMensagem(phone, { tipo: 'media', mediaUrl, mimeType, caption });
     logger.info(`[uazapi] Mídia enfileirada para ${phone} (fora do horário)`);
@@ -76,13 +80,13 @@ async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = fal
 
     if (isPdf) {
       await axios.post(
-        `${baseUrl()}/send/document`,
+        `${url}/send/document`,
         { number: phone, document: mediaUrl, filename: 'documento.pdf', caption },
         { headers: headers(), timeout: 20000 }
       );
     } else {
       await axios.post(
-        `${baseUrl()}/send/image`,
+        `${url}/send/image`,
         { number: phone, image: mediaUrl, caption },
         { headers: headers(), timeout: 20000 }
       );
