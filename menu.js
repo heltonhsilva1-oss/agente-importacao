@@ -423,9 +423,10 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
     return;
   }
 
-  // Timeout — reinicia o fluxo
+  // Timeout — reinicia o fluxo (exceto estados de pagamento/etiqueta que precisam de tempo real)
+  const ESTADOS_SEM_TIMEOUT = ['idle', 'menu', 'flow4_comprovante', 'flow4_etiqueta', 'flow4_selecao_pedido'];
   const conv = await getConversa(normalPhone);
-  if (conv && !['idle','menu'].includes(conv.estado) && isTimedOut(conv)) {
+  if (conv && !ESTADOS_SEM_TIMEOUT.includes(conv.estado) && isTimedOut(conv)) {
     await send(normalPhone, 'Informe que a sessão expirou e vai reiniciar.',
       {}, 'Sua sessão expirou. Vou reiniciar o atendimento.');
     await clearConversa(normalPhone);
