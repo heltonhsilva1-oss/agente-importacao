@@ -55,8 +55,8 @@ async function jobLembreteTravessia() {
   for (const { pedido: p, cliente, phone } of itens) {
     if (diasNoStatus(p) < 1) continue;
     const msg =
-      `⏰ Olá ${cliente.nome}! Você tem a taxa de travessia pendente: *${fmtCur(p.total_travessia_brl || 0)}*\n\n` +
-      `⚠️ *Pague até sexta-feira ao meio-dia* para garantir o embarque.\n` +
+      `Olá ${cliente.nome}! Você tem a taxa de travessia pendente: *${fmtCur(p.total_travessia_brl || 0)}*\n\n` +
+      `Pague até sexta-feira ao meio-dia* para garantir o embarque.\n` +
       `Avise o pagamento aqui no WhatsApp.`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Lembrete travessia → ${cliente.nome}`);
@@ -69,7 +69,7 @@ async function jobAlertaUrgenteTravessia() {
   const itens = await getPedidosComCliente('aguardando_pgto_travessia');
   for (const { pedido: p, cliente, phone } of itens) {
     const msg =
-      `🚨 *ÚLTIMO DIA, ${cliente.nome}!*\n\n` +
+      `ULTIMO DIA, ${cliente.nome}!*\n\n` +
       `A taxa de travessia de *${fmtCur(p.total_travessia_brl || 0)}* precisa ser paga *até hoje ao meio-dia*.\n\n` +
       `Após esse horário sua mercadoria ficará para a próxima viagem.\n` +
       `Avise o pagamento aqui no WhatsApp.`;
@@ -87,7 +87,7 @@ async function jobCorteTravessia() {
     `• Pedido #${p.id} — ${cliente.nome} (${fmtCur(p.total_travessia_brl || 0)})`
   ).join('\n');
   await sendText(OPERATOR_PHONE,
-    `🚫 *Sem pagamento de travessia — ficam para a próxima viagem:*\n\n${lista}`, true);
+    `Sem pagamento de travessia — ficam para a próxima viagem:*\n\n${lista}`, true);
 }
 
 // ── Lembretes COMISSÃO — diário às 9h ────────────────────────────────────────
@@ -97,8 +97,8 @@ async function jobLembreteComissao() {
   for (const { pedido: p, cliente, phone } of itens) {
     if (diasNoStatus(p) < 1) continue;
     const msg =
-      `⏰ Olá ${cliente.nome}! Você tem a comissão pendente: *${fmtCur(p.total_comissao_brl || 0)}*\n\n` +
-      `⚠️ *Pague até segunda-feira* para garantir o envio da sua mercadoria.\n` +
+      `Olá ${cliente.nome}! Você tem a comissão pendente: *${fmtCur(p.total_comissao_brl || 0)}*\n\n` +
+      `Pague até segunda-feira* para garantir o envio da sua mercadoria.\n` +
       `Avise o pagamento aqui no WhatsApp.`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Lembrete comissão → ${cliente.nome}`);
@@ -111,7 +111,7 @@ async function jobAlertaUrgenteComissao() {
   const itens = await getPedidosComCliente('aguardando_pgto_comissao');
   for (const { pedido: p, cliente, phone } of itens) {
     const msg =
-      `🚨 *ÚLTIMO DIA, ${cliente.nome}!*\n\n` +
+      `ULTIMO DIA, ${cliente.nome}!*\n\n` +
       `A comissão de *${fmtCur(p.total_comissao_brl || 0)}* precisa ser paga *hoje*.\n\n` +
       `Pedidos sem pagamento hoje ficam para a próxima data de envio.\n` +
       `Avise o pagamento aqui no WhatsApp.`;
@@ -129,7 +129,7 @@ async function jobCorteComissao() {
     `• Pedido #${p.id} — ${cliente.nome} (${fmtCur(p.total_comissao_brl || 0)})`
   ).join('\n');
   await sendText(OPERATOR_PHONE,
-    `🚫 *Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
+    `Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
 }
 
 // ── Aviso de VIP vencendo — todo dia às 9h ────────────────────────────────────
@@ -151,7 +151,7 @@ async function jobAvisoVip() {
     const phone = clienteToWhatsapp(c);
     if (!phone) continue;
     await sendText(phone,
-      `👑 Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias. Entre em contato para renovar.`, true);
+      `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias. Entre em contato para renovar.`, true);
     logger.info(`[agend] Aviso VIP → ${c.nome}`);
   }
 }
@@ -164,15 +164,15 @@ async function jobResumoMatinal() {
   const pedidos = snap.docs.map(d => d.data());
   const conta = (s) => pedidos.filter(p => p.status === s).length;
   const resumo = [
-    `📊 *Resumo do dia — ${new Date().toLocaleDateString('pt-BR')}*`,
+    `*Resumo do dia — ${new Date().toLocaleDateString('pt-BR')}*`,
     '',
-    `💰 Ag. pgto. travessia: ${conta('aguardando_pgto_travessia')}`,
-    `💰 Ag. pgto. comissão:  ${conta('aguardando_pgto_comissao')}`,
-    `🏷️ Ag. etiqueta:        ${conta('aguardando_etiqueta')}`,
-    `📦 Ag. envio:           ${conta('aguardando_envio')}`,
-    `🚚 Em trânsito:         ${conta('em_transito')}`,
-    `📍 Chegou em SP:        ${conta('chegou_sp')}`,
-    `🇵🇾 Retirado no PY:     ${conta('retirado_paraguai')}`,
+    `- Ag. pgto. travessia: ${conta('aguardando_pgto_travessia')}`,
+    `- Ag. pgto. comissão:  ${conta('aguardando_pgto_comissao')}`,
+    `- Ag. etiqueta:        ${conta('aguardando_etiqueta')}`,
+    `- Ag. envio:           ${conta('aguardando_envio')}`,
+    `- Em trânsito:         ${conta('em_transito')}`,
+    `- Chegou em SP:        ${conta('chegou_sp')}`,
+    `- Retirado no PY:     ${conta('retirado_paraguai')}`,
     `✅ Postados:            ${conta('postado')}`,
   ].join('\n');
   await sendText(OPERATOR_PHONE, resumo, true);
@@ -209,7 +209,7 @@ async function jobAlertaPedidoParado() {
     }
   }
   if (alertas.length > 0) {
-    await sendText(OPERATOR_PHONE, `⚠️ *Pedidos parados — verificar:*\n\n${alertas.join('\n')}`, true);
+    await sendText(OPERATOR_PHONE, `Pedidos parados — verificar:*\n\n${alertas.join('\n')}`, true);
     logger.info(`[agend] ${alertas.length} pedido(s) parado(s) alertado(s)`);
   }
 }

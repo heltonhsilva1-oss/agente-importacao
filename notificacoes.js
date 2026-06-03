@@ -36,37 +36,37 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
 
   const msgs = {
     retirado_paraguai:
-      `Olá ${nome}! Sua mercadoria foi retirada no Paraguai. 🇵🇾\n\n` +
-      `🔗 Acompanhe no portal: ${portal}`,
+      `Olá ${nome}! Sua mercadoria foi retirada no Paraguai.\n\n` +
+      `Acompanhe no portal: ${portal}`,
     aguardando_pgto_travessia:
       `Olá ${nome}! Sua mercadoria está pronta para embarcar.\n` +
       `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
-      `💳 Após pagar, é só enviar o comprovante aqui nessa conversa.\n🔗 Ver detalhes: ${portal}`,
+      `Após pagar, é só enviar o comprovante aqui nessa conversa.\nVer detalhes: ${portal}`,
     em_transito:
-      `Olá ${nome}! Sua mercadoria está a caminho de São Paulo. 🚚\n\n` +
-      `🔗 Acompanhe no portal: ${portal}`,
+      `Olá ${nome}! Sua mercadoria está a caminho de São Paulo.\n\n` +
+      `Acompanhe no portal: ${portal}`,
     chegou_sp:
-      `Olá ${nome}! Sua mercadoria chegou em São Paulo! 🎉\n\n` +
-      `⚠️ *Para garantir o envio hoje*, você precisa concluir ainda hoje:\n` +
-      `1️⃣ Pagar a comissão de *${fmtCur(com)}* (avise aqui no WhatsApp)\n` +
-      `2️⃣ Enviar a etiqueta de postagem\n\n` +
+      `Olá ${nome}! Sua mercadoria chegou em São Paulo.\n\n` +
+      `*Para garantir o envio hoje*, você precisa concluir ainda hoje:\n` +
+      `1. Pagar a comissão de *${fmtCur(com)}* (avise aqui no WhatsApp)\n` +
+      `2. Enviar a etiqueta de postagem\n\n` +
       `Pedidos que não concluírem todos os passos hoje ficam para a próxima data de envio.\n\n` +
-      `🔗 Ver detalhes no portal: ${portal}`,
+      `Ver detalhes no portal: ${portal}`,
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
-      `⏰ Pague hoje para garantir o envio.\n💳 Após pagar, é só enviar o comprovante aqui nessa conversa.\n🔗 Ver detalhes: ${portal}`,
+      `Pague hoje para garantir o envio.\nApós pagar, é só enviar o comprovante aqui nessa conversa.\nVer detalhes: ${portal}`,
     aguardando_etiqueta:
-      `Olá ${nome}! Pagamento confirmado. ✅\n\n` +
-      `🔗 Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
-      `Depois é só enviar a etiqueta aqui nessa conversa. 📦`,
+      `Olá ${nome}! Pagamento confirmado.\n\n` +
+      `Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
+      `Depois é só enviar a etiqueta aqui nessa conversa.`,
     aguardando_envio:
-      `Olá ${nome}! Sua etiqueta foi confirmada. Em breve sua encomenda será postada. 📦\n\n` +
-      `🔗 Acompanhe no portal: ${portal}`,
+      `Olá ${nome}! Sua etiqueta foi confirmada. Em breve sua encomenda será postada.\n\n` +
+      `Acompanhe no portal: ${portal}`,
     postado:
-      `Olá ${nome}! Sua encomenda foi postada. ✅\n` +
+      `Olá ${nome}! Sua encomenda foi postada.\n` +
       `Acompanhe pelo código da etiqueta que você gerou.\n\n` +
-      `🔗 Ver no portal: ${portal}`,
+      `Ver no portal: ${portal}`,
   };
   return msgs[status] || null;
 }
@@ -128,9 +128,9 @@ function setupListeners() {
               }
               const portal = `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`;
               await sendText(phone,
-                `Olá ${cliente.nome}! ✅ Recebemos sua nota fiscal.\n\n` +
-                `Em breve vamos retirar seu pedido no Paraguai. 🇵🇾\n\n` +
-                `🔗 Acompanhe pelo portal: ${portal}`, true);
+                `Olá ${cliente.nome}! Recebemos sua nota fiscal.\n\n` +
+                `Em breve vamos retirar seu pedido no Paraguai.\n\n` +
+                `Acompanhe pelo portal: ${portal}`, true);
               logger.info(`[notif] ✅ Nota recebida notificada → ${cliente.nome} (${phone})`);
             } catch (err) {
               logger.error('[notif] Erro ao notificar nota recebida:', err.message);
@@ -239,7 +239,7 @@ function setupListeners() {
             await new Promise((r) => setTimeout(r, 3000)); // delay anti-flood
 
             const msg =
-              `👋 Olá ${cliente.nome}, seja bem-vindo(a) à *Kidex Importações*!\n\n` +
+              `Olá ${cliente.nome}, seja bem-vindo(a) à *Kidex Importações*!\n\n` +
               `Estou aqui para te ajudar com seus pedidos.\n` +
               `Sempre que precisar, é só me chamar aqui no WhatsApp. 😊\n\n` +
               `Digite *Menu* para ver as opções disponíveis.`;
@@ -277,7 +277,7 @@ function setupListeners() {
 
           logger.info(`[notif] Nova viagem ${id} — notificando todos os clientes`);
           const msg =
-            `🇵🇾 *Kidex Importações*\n\n` +
+            `Kidex Importações\n\n` +
             `Iniciamos uma nova viagem! Aguardamos sua nota fiscal para retirar seu pedido no Paraguai.\n\n` +
             `Envie sua nota pelo WhatsApp ou acesse o portal para mais informações.`;
           await notificarTodosClientes(msg);

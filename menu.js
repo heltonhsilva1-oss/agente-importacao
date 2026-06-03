@@ -130,10 +130,10 @@ async function handleFlow1(phone, estado, body, mediaUrl) {
       return;
     }
     await clearConversa(phone);
-    await sendText(phone, '✅ Nota recebida! Em breve será cadastrada no sistema.', true);
-    appendHistorico(phone, 'assistant', '✅ Nota recebida! Em breve será cadastrada no sistema.');
+    await sendText(phone, 'Nota recebida! Em breve será cadastrada no sistema.', true);
+    appendHistorico(phone, 'assistant', 'Nota recebida! Em breve será cadastrada no sistema.');
     await sendText(OPERATOR_PHONE,
-      `📸 Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
+      `Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
   }
 }
 
@@ -161,7 +161,7 @@ async function iniciarFlow2(phone, cliente) {
   };
   await send(phone,
     `Liste os pedidos de ${cliente.nome}. Inclua o link do portal para fotos. Peça para digitar o número do pedido ou 0 para voltar.`,
-    ctx, `📦 Seus pedidos:\n${listaPedidos}\n\n🔗 Ver fotos e detalhes: ${link}\n\nDigite o número ou 0 para voltar.`, 450);
+    ctx, `Seus pedidos:\n${listaPedidos}\n\nVer fotos e detalhes: ${link}\n\nDigite o número ou 0 para voltar.`, 450);
 
   await setConversa(phone, {
     estado: 'flow2_selecao',
@@ -202,7 +202,7 @@ async function handleFlow2Selecao(phone, body) {
       `\nLink portal para fotos e detalhes: ${link}`,
   };
   await send(phone, 'Apresente os detalhes do pedido e inclua o link do portal para fotos.',
-    ctx, `📦 Pedido #${String(pedido.id).padStart(3,'0')}\n${STATUS_LABELS[pedido.status] || pedido.status}\n${prods}\n\n🔗 Ver detalhes: ${link}`, 350);
+    ctx, `Pedido #${String(pedido.id).padStart(3,'0')}\n${STATUS_LABELS[pedido.status] || pedido.status}\n${prods}\n\nVer detalhes: ${link}`, 350);
   await clearConversa(phone);
 }
 
@@ -241,7 +241,7 @@ async function iniciarFlow3(phone, cliente) {
   };
   await send(phone,
     `Apresente os valores em aberto de ${cliente.nome} com total. Inclua o link do portal. Mencione que pode pagar pelo fluxo 4.`,
-    ctx, `💰 Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}\n\n🔗 Ver no portal: ${link}`, 400);
+    ctx, `Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}\n\nVer no portal: ${link}`, 400);
 }
 
 // ── flow 4: avisar pagamento ──────────────────────────────────────────────────
@@ -300,12 +300,12 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
     }
     const clienteNome = dados.cliente_nome || phone;
     await clearConversa(phone);
-    await sendText(phone, '✅ Comprovante recebido! Aguarde a confirmação do operador.', true);
-    appendHistorico(phone, 'assistant', '✅ Comprovante recebido! Aguarde a confirmação do operador.');
+    await sendText(phone, 'Comprovante recebido! Aguarde a confirmação do operador.', true);
+    appendHistorico(phone, 'assistant', 'Comprovante recebido! Aguarde a confirmação do operador.');
     const pendenteId = await addPendentePagamento(phone, clienteNome);
     await updateConversa(OPERATOR_PHONE, { dados: { pendente_id: pendenteId, pendente_cliente_phone: phone } });
     await sendText(OPERATOR_PHONE,
-      `💳 Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nComprovante enviado na conversa do agente.\nResponda OK para confirmar ou NÃO para recusar.`, true);
+      `Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nComprovante enviado na conversa do agente.\nResponda OK para confirmar ou NÃO para recusar.`, true);
     return;
   }
 
@@ -317,10 +317,10 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
     }
     const clienteNome = dados.cliente_nome || phone;
     await clearConversa(phone);
-    await sendText(phone, '📦 Etiqueta recebida! Em breve sua encomenda será despachada.', true);
-    appendHistorico(phone, 'assistant', '📦 Etiqueta recebida! Em breve sua encomenda será despachada.');
+    await sendText(phone, 'Etiqueta recebida! Em breve sua encomenda será despachada.', true);
+    appendHistorico(phone, 'assistant', 'Etiqueta recebida! Em breve sua encomenda será despachada.');
     await sendText(OPERATOR_PHONE,
-      `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
+      `Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
   }
 }
 
@@ -334,8 +334,8 @@ async function handleConfirmacaoEntrega(phone, body) {
   saveUserMsg(phone, body);
 
   if (upper === 'SIM' || upper === '1') {
-    await sendText(phone, '🎉 Que ótimo! Obrigado por confirmar. Qualquer coisa estamos aqui!', true);
-    appendHistorico(phone, 'assistant', '🎉 Que ótimo! Obrigado por confirmar.');
+    await sendText(phone, 'Que otimo! Obrigado por confirmar. Qualquer coisa estamos aqui!', true);
+    appendHistorico(phone, 'assistant', 'Que otimo! Obrigado por confirmar.');
     // Marca pedido como entrega confirmada no Firestore
     if (dados.pedido_id) {
       const { getFirestore, FieldValue } = require('firebase-admin/firestore');
@@ -377,7 +377,7 @@ async function handleOperadorResposta(body) {
         await new Promise(r => setTimeout(r, 500)); // delay anti-spam
       } catch (_) {}
     }
-    await sendText(OPERATOR_PHONE, `✅ Broadcast enviado para ${enviados} cliente(s).`, true);
+    await sendText(OPERATOR_PHONE, `Broadcast enviado para ${enviados} cliente(s).`, true);
     return true;
   }
 
@@ -395,11 +395,11 @@ async function handleOperadorResposta(body) {
 
   if (confirmado) {
     await sendText(pendente.cliente_numero,
-      '✅ Pagamento confirmado! Em breve você receberá as próximas instruções.', true);
+      'Pagamento confirmado! Em breve você receberá as próximas instruções.', true);
   } else {
     await send(pendente.cliente_numero,
       'Informe que não foi possível confirmar o pagamento e peça para entrar em contato.',
-      {}, '❌ Pagamento não confirmado. Entre em contato com o operador.');
+      {}, 'Pagamento nao confirmado. Entre em contato com o operador.');
   }
   await updateConversa(OPERATOR_PHONE, { dados: {} });
   return true;
@@ -462,7 +462,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
         return;
       case '6':
         await send(normalPhone, 'Informe que vai chamar o operador e peça para aguardar.', {},
-          'Vou chamar o operador. Aguarde um momento. 👋');
+          'Vou chamar o operador. Aguarde um momento.');
         await sendText(OPERATOR_PHONE, `📞 Cliente ${normalPhone} quer falar com você.`, true);
         await clearConversa(normalPhone);
         return;
