@@ -83,16 +83,23 @@ function setupListeners() {
         const statusAnterior = statusCache.get(id);
         statusCache.set(id, pedido.status);
 
-        if (!pedidosCarregados || statusAnterior === pedido.status) return;
+        if (!pedidosCarregados) return; // ignora durante carga inicial
+        if (statusAnterior === pedido.status) return; // status não mudou
 
         logger.info(`[notif] Pedido ${id}: ${statusAnterior} → ${pedido.status}`);
 
         try {
           const cliente = await getClienteById(pedido.cliente_id);
-          if (!cliente) return;
+          if (!cliente) {
+            logger.warn(`[notif] Cliente ${pedido.cliente_id} não encontrado para pedido ${id}`);
+            return;
+          }
 
           const phone = clienteToWhatsapp(cliente);
-          if (!phone) return;
+          if (!phone) {
+            logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`);
+            return;
+          }
 
           const msg = buildMensagemStatus(
             pedido.status,
@@ -102,8 +109,11 @@ function setupListeners() {
           );
 
           if (msg) {
-            await sendText(phone, msg);
-            logger.info(`[notif] Status ${pedido.status} notificado → ${cliente.nome}`);
+            // forceNow=true: notificações de status sempre enviam imediatamente
+            await sendText(phone, msg, true);
+            logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${pedido.status}`);
+          } else {
+            logger.info(`[notif] Status ${pedido.status} sem mensagem configurada — ignorado`);
           }
         } catch (err) {
           logger.error('[notif] Erro ao notificar status:', err.message);
