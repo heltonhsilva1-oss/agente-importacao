@@ -47,11 +47,15 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
       `🔗 Acompanhe no portal: ${portal}`,
     chegou_sp:
       `Olá ${nome}! Sua mercadoria chegou em São Paulo! 🎉\n\n` +
+      `⚠️ *Para garantir o envio hoje*, você precisa concluir ainda hoje:\n` +
+      `1️⃣ Pagar a comissão de *${fmtCur(com)}* (avise aqui no WhatsApp)\n` +
+      `2️⃣ Enviar a etiqueta de postagem\n\n` +
+      `Pedidos que não concluírem todos os passos hoje ficam para a próxima data de envio.\n\n` +
       `🔗 Ver detalhes no portal: ${portal}`,
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
-      `💳 Avise o pagamento respondendo aqui mesmo.\n🔗 Ver detalhes: ${portal}`,
+      `⏰ Pague hoje para garantir o envio. Avise aqui no WhatsApp.\n🔗 Ver detalhes: ${portal}`,
     aguardando_etiqueta:
       `Olá ${nome}! Pagamento confirmado. ✅\n\n` +
       `🔗 Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
@@ -65,6 +69,21 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
       `🔗 Ver no portal: ${portal}`,
   };
   return msgs[status] || null;
+}
+
+async function notificarTodosClientes(mensagem) {
+  const snap = await getFirestore().collection('clientes').get();
+  for (const doc of snap.docs) {
+    const c = doc.data();
+    if (c.ativo === false) continue;
+    const d = (c.telefone || '').replace(/\D/g, '');
+    if (!d || d.length < 10) continue;
+    const phone = d.startsWith('55') ? d : `55${d}`;
+    try {
+      await sendText(phone, mensagem, true);
+      await new Promise(r => setTimeout(r, 600)); // delay anti-spam
+    } catch (_) {}
+  }
 }
 
 function setupListeners() {
@@ -203,6 +222,38 @@ function setupListeners() {
       }
     },
     (err) => logger.error('[notif] Erro no listener de clientes:', err.message)
+  );
+
+  // ── Listener de viagens — nova viagem notifica todos os clientes ──────────
+  let viagensCarregadas = false;
+  const viagemIds = new Set();
+
+  db.collection('viagens').onSnapshot(
+    (snap) => {
+      snap.docChanges().forEach(async (change) => {
+        const viagem = change.doc.data();
+        const id = String(viagem.id);
+
+        if (change.type === 'added') {
+          if (!viagensCarregadas) { viagemIds.add(id); return; }
+          if (viagemIds.has(id)) return;
+          viagemIds.add(id);
+
+          logger.info(`[notif] Nova viagem ${id} — notificando todos os clientes`);
+          const msg =
+            `🇵🇾 *Minha Importação*\n\n` +
+            `Iniciamos uma nova viagem! Aguardamos sua nota fiscal para retirar seu pedido no Paraguai.\n\n` +
+            `Envie sua nota pelo WhatsApp ou acesse o portal para mais informações.`;
+          await notificarTodosClientes(msg);
+        }
+      });
+
+      if (!viagensCarregadas) {
+        viagensCarregadas = true;
+        logger.info(`[notif] Cache de viagens carregado (${viagemIds.size} viagens)`);
+      }
+    },
+    (err) => logger.error('[notif] Erro no listener de viagens:', err.message)
   );
 }
 
