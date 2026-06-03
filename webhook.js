@@ -82,14 +82,6 @@ function setupWebhook(app) {
 
       const { phone, body, type, mediaUrl, mimeType, isFromMe, msgId } = parsed;
 
-      // Valida que a mensagem pertence à nossa instância
-      const owner = (raw.message?.owner || raw.owner || '').replace(/\D/g, '');
-      const agentNum = (AGENT_PHONE || '').replace(/\D/g, '');
-      if (owner && owner !== agentNum) {
-        logger.warn(`[webhook] Mensagem de instância desconhecida ignorada (owner: ${owner})`);
-        return;
-      }
-
       logger.info(`[webhook] phone=${phone} type=${type} fromMe=${isFromMe} body="${(body||'').slice(0,60)}"`);
 
       if (isFromMe)                       return; // mensagem do próprio agente
