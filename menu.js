@@ -1,29 +1,21 @@
 'use strict';
 // Máquina de estados dos fluxos de atendimento
-// Cada função handleFlowN processa uma etapa do fluxo correspondente
+// Lógica e validações: regras fixas
+// Linguagem e respostas em texto: Claude API
 
-const Anthropic = require('@anthropic-ai/sdk');
 const { logger } = require('./logger');
+const { responder, detectarIntencao } = require('./claude');
 const {
-  getConversa,
-  setConversa,
-  updateConversa,
-  clearConversa,
-  findClienteByCpfDigitos,
-  findClienteByWhatsapp,
-  getPedidosAtivos,
-  getPedidosPendentes,
-  addPendentePagamento,
-  getPendenteAtual,
-  resolverPendente,
+  getConversa, setConversa, updateConversa, clearConversa,
+  findClienteByCpfDigitos, findClienteByWhatsapp,
+  getPedidosAtivos, getPedidosPendentes,
+  addPendentePagamento, getPendenteAtual, resolverPendente,
 } = require('./firestore');
 const { sendText, sendMedia } = require('./uazapi');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
-const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
-const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
+const TIMEOUT_MS     = 10 * 60 * 1000;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,103 +23,108 @@ function fmtCur(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function normCpf(s) {
-  return (s || '').replace(/\D/g, '');
-}
+function normCpf(s) { return (s || '').replace(/\D/g, ''); }
 
 function normalizePhone(phone) {
-  // LID ou JID com sufixo (@lid, @s.whatsapp.net) → usa como está
   if ((phone || '').includes('@')) return phone;
   const d = (phone || '').replace(/\D/g, '');
-  if (d.startsWith('55') && d.length >= 12) return d;
-  return `55${d}`;
+  return d.startsWith('55') && d.length >= 12 ? d : `55${d}`;
 }
 
-function isTimedOut(conversa) {
-  if (!conversa?.ultima_atividade) return true;
-  const last = conversa.ultima_atividade.toDate
-    ? conversa.ultima_atividade.toDate()
-    : new Date(conversa.ultima_atividade);
+function isTimedOut(conv) {
+  if (!conv?.ultima_atividade) return true;
+  const last = conv.ultima_atividade.toDate
+    ? conv.ultima_atividade.toDate()
+    : new Date(conv.ultima_atividade);
   return Date.now() - last.getTime() > TIMEOUT_MS;
 }
 
 const STATUS_LABELS = {
-  nota_recebida: 'Nota Recebida 📝',
-  retirado_paraguai: 'Retirado no Paraguai 🇵🇾',
-  aguardando_pgto_travessia: 'Aguardando Pgto. Travessia 💰',
-  em_transito: 'Em Trânsito 🚚',
-  chegou_sp: 'Chegou em SP 🎉',
-  aguardando_pgto_comissao: 'Aguardando Pgto. Comissão 💰',
-  aguardando_etiqueta: 'Aguardando Etiqueta 🏷️',
-  aguardando_envio: 'Aguardando Envio 📦',
-  postado: 'Postado ✅',
+  nota_recebida:              'Nota Recebida 📝',
+  retirado_paraguai:          'Retirado no Paraguai 🇵🇾',
+  aguardando_pgto_travessia:  'Aguardando Pgto. Travessia 💰',
+  em_transito:                'Em Trânsito 🚚',
+  chegou_sp:                  'Chegou em SP 🎉',
+  aguardando_pgto_comissao:   'Aguardando Pgto. Comissão 💰',
+  aguardando_etiqueta:        'Aguardando Etiqueta 🏷️',
+  aguardando_envio:           'Aguardando Envio 📦',
+  postado:                    'Postado ✅',
 };
+
+// Envia mensagem gerada pelo Claude ou usa fallback fixo se Claude falhar
+async function send(phone, instrucao, ctx = {}, fallback = '', maxTokens = 200) {
+  const texto = await responder(ctx, instrucao, maxTokens);
+  await sendText(phone, texto || fallback, true);
+}
 
 // ── menu principal ────────────────────────────────────────────────────────────
 
-async function showMenu(phone) {
-  const msg =
-    `Olá! Bem-vindo à *Importação Minha Importação*. 👋\n\n` +
-    `Como posso te ajudar?\n` +
-    `1️⃣ Enviar nota fiscal\n` +
-    `2️⃣ Ver status do meu pedido\n` +
-    `3️⃣ Ver o que devo\n` +
-    `4️⃣ Avisar que paguei\n` +
-    `5️⃣ Falar com o operador\n\n` +
-    `Digite o número da opção desejada.`;
-  await sendText(phone, msg, true);
+async function showMenu(phone, clienteNome = '') {
+  const ctx = { estado: 'menu', clienteNome };
+  const instrucao = clienteNome
+    ? `Cumprimente ${clienteNome} e apresente as 5 opções do menu de atendimento de forma amigável.`
+    : 'Dê as boas-vindas e apresente as 5 opções do menu de atendimento de forma amigável.';
+  const fallback =
+    `Olá! Bem-vindo à *Minha Importação*. 👋\n\n` +
+    `1️⃣ Enviar nota fiscal\n2️⃣ Ver status do pedido\n` +
+    `3️⃣ Ver o que devo\n4️⃣ Avisar que paguei\n5️⃣ Falar com o operador\n\n` +
+    `Digite o número da opção.`;
+  await send(phone, instrucao, ctx, fallback, 250);
   await setConversa(phone, { estado: 'menu', dados: {} });
 }
 
 // ── flow 1: enviar nota fiscal ────────────────────────────────────────────────
 
 async function iniciarFlow1(phone) {
-  await sendText(phone, 'Por favor, me informe o nome da loja.', true);
+  const ctx = { estado: 'flow1_loja' };
+  await send(phone, 'Peça o nome da loja de onde veio a mercadoria.', ctx,
+    'Por favor, me informe o nome da loja.');
   await setConversa(phone, { estado: 'flow1_loja', dados: {} });
 }
 
 async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
-  const conv = await getConversa(phone);
+  const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
   if (estado === 'flow1_loja') {
     if (!body?.trim()) {
-      await sendText(phone, 'Por favor, me informe o nome da loja.', true);
+      await send(phone, 'Peça o nome da loja novamente.', { estado }, 'Por favor, informe o nome da loja.');
       return;
     }
     dados.loja = body.trim();
-    await sendText(phone, 'Agora me informe o nome do vendedor.', true);
+    const ctx = { estado: 'flow1_vendedor', dados };
+    await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', ctx,
+      'Agora me informe o nome do vendedor.');
     await setConversa(phone, { estado: 'flow1_vendedor', dados });
     return;
   }
 
   if (estado === 'flow1_vendedor') {
     if (!body?.trim()) {
-      await sendText(phone, 'Por favor, me informe o nome do vendedor.', true);
+      await send(phone, 'Peça o nome do vendedor novamente.', { estado }, 'Por favor, informe o nome do vendedor.');
       return;
     }
     dados.vendedor = body.trim();
-    await sendText(phone, 'Agora envie a foto, print ou PDF da nota fiscal.', true);
+    const ctx = { estado: 'flow1_arquivo', dados };
+    await send(phone, 'Confirme loja e vendedor recebidos e peça para enviar a nota fiscal (foto, print ou PDF).', ctx,
+      'Agora envie a foto, print ou PDF da nota fiscal.');
     await setConversa(phone, { estado: 'flow1_arquivo', dados });
     return;
   }
 
   if (estado === 'flow1_arquivo') {
     if (!mediaUrl) {
-      await sendText(phone, 'Por favor, envie a foto, print ou PDF da nota fiscal.', true);
+      await send(phone, 'Lembre o cliente de enviar a nota fiscal como imagem ou PDF.', { estado },
+        'Por favor, envie a foto, print ou PDF da nota fiscal.');
       return;
     }
-    // Limpa estado PRIMEIRO para evitar loop caso algo falhe depois
+    // Limpa estado ANTES de enviar para evitar loop
     await clearConversa(phone);
-    // Confirmação ao cliente
-    await sendText(phone, '✅ Nota recebida! Em breve será cadastrada no sistema.', true);
-    // Encaminhar tudo ao operador
-    const msgOp =
-      `📸 Nova nota fiscal recebida!\n` +
-      `Cliente: ${phone}\n` +
-      `Loja: ${dados.loja}\n` +
-      `Vendedor: ${dados.vendedor}`;
-    await sendText(OPERATOR_PHONE, msgOp, true);
+    await send(phone, 'Confirme que a nota foi recebida e diga que em breve será cadastrada.', {},
+      '✅ Nota recebida! Em breve será cadastrada no sistema.');
+    // Encaminha ao operador
+    await sendText(OPERATOR_PHONE,
+      `📸 Nova nota fiscal!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
     await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
   }
 }
@@ -135,17 +132,19 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
 // ── flow 2: ver status do pedido ──────────────────────────────────────────────
 
 async function handleFlow2(phone, estado, body) {
-  const conv = await getConversa(phone);
+  const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
   if (estado === 'flow2_cpf') {
     const cpf = normCpf(body);
     if (cpf.length !== 11) {
-      await sendText(phone, 'CPF inválido. Por favor, digite somente os 11 números do seu CPF.', true);
+      await send(phone, 'Explique que o CPF deve ter 11 dígitos e peça novamente.', { estado },
+        'CPF inválido. Digite somente os 11 números do seu CPF.');
       return;
     }
     dados.cpf = cpf;
-    await sendText(phone, 'Agora digite os 4 últimos dígitos do seu telefone.', true);
+    await send(phone, 'Confirme que recebeu o CPF e peça os 4 últimos dígitos do telefone cadastrado.', { estado, dados },
+      'Agora digite os 4 últimos dígitos do seu telefone.');
     await setConversa(phone, { estado: 'flow2_digitos', dados });
     return;
   }
@@ -153,72 +152,69 @@ async function handleFlow2(phone, estado, body) {
   if (estado === 'flow2_digitos') {
     const digitos = (body || '').replace(/\D/g, '').slice(-4);
     if (digitos.length !== 4) {
-      await sendText(phone, 'Por favor, digite somente os 4 últimos dígitos do seu telefone.', true);
+      await send(phone, 'Peça apenas os 4 últimos dígitos do telefone.', { estado },
+        'Digite somente os 4 últimos dígitos do seu telefone.');
       return;
     }
     const cliente = await findClienteByCpfDigitos(dados.cpf, digitos);
     if (!cliente) {
-      await sendText(
-        phone,
-        'CPF ou telefone não encontrado. Verifique os dados e tente novamente.',
-        true
-      );
+      await send(phone, 'Informe que CPF ou telefone não foram encontrados e ofereça tentar novamente.', { estado },
+        'CPF ou telefone não encontrado. Verifique e tente novamente.');
       await setConversa(phone, { estado: 'flow2_cpf', dados: {} });
-      await sendText(phone, 'Por favor, digite seu CPF (somente números).', true);
       return;
     }
     const pedidos = await getPedidosAtivos(cliente.id);
-    if (pedidos.length === 0) {
-      await sendText(phone, `Olá ${cliente.nome}! Não há pedidos ativos no momento.`, true);
+    if (!pedidos.length) {
+      await send(phone, `Informe a ${cliente.nome} que não há pedidos ativos no momento.`,
+        { estado, clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem pedidos ativos no momento.`);
       await clearConversa(phone);
       return;
     }
-    let msg = `📦 Seus pedidos, ${cliente.nome}:\n`;
-    pedidos.forEach((p) => {
-      const label = STATUS_LABELS[p.status] || p.status;
-      const desc =
-        (p.produtos || []).map((pr) => pr.descricao).filter(Boolean).join(', ') ||
-        `Pedido #${p.id}`;
-      msg += `\nPedido #${String(p.id).padStart(3, '0')} — ${desc}\nStatus: ${label}\n`;
-    });
-    msg += '\nDigite o número do pedido para mais detalhes ou 0 para voltar ao menu.';
-    await sendText(phone, msg, true);
-    dados.cliente_id = cliente.id;
+    // Monta lista de pedidos para o Claude formatar
+    const listaPedidos = pedidos.map((p, i) => {
+      const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
+      return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} | Status: ${STATUS_LABELS[p.status] || p.status}`;
+    }).join('\n');
+
+    const ctx = {
+      estado: 'flow2_selecao',
+      clienteNome: cliente.nome,
+      extra: `Pedidos ativos:\n${listaPedidos}`,
+    };
+    await send(phone,
+      `Liste os pedidos ativos de ${cliente.nome} de forma clara e peça para digitar o número do pedido para mais detalhes ou 0 para voltar ao menu.`,
+      ctx, `📦 Seus pedidos:\n${listaPedidos}\n\nDigite o número do pedido ou 0 para voltar.`, 400);
+    dados.cliente_id   = cliente.id;
     dados.cliente_nome = cliente.nome;
-    dados.pedidos_ids = pedidos.map((p) => p.id);
+    dados.pedidos_ids  = pedidos.map(p => p.id);
     await setConversa(phone, { estado: 'flow2_selecao', dados });
     return;
   }
 
   if (estado === 'flow2_selecao') {
-    if (body === '0') {
-      await clearConversa(phone);
-      await showMenu(phone);
-      return;
-    }
+    if (body === '0') { await clearConversa(phone); await showMenu(phone, dados.cliente_nome); return; }
     const pedidoId = parseInt(body);
     if (isNaN(pedidoId) || !(dados.pedidos_ids || []).includes(pedidoId)) {
-      await sendText(phone, 'Opção inválida. Digite o número do pedido ou 0 para voltar ao menu.', true);
+      await send(phone, 'Diga que a opção é inválida e peça para digitar um número de pedido válido ou 0 para voltar.', {},
+        'Opção inválida. Digite o número do pedido ou 0 para voltar.');
       return;
     }
     const pedidos = await getPedidosAtivos(dados.cliente_id);
-    const pedido = pedidos.find((p) => p.id === pedidoId);
-    if (!pedido) {
-      await sendText(phone, 'Pedido não encontrado. Tente novamente.', true);
-      return;
-    }
-    const prods = (pedido.produtos || [])
-      .map((pr) => `• ${pr.descricao} (${pr.quantidade}x)`)
-      .join('\n');
-    const label = STATUS_LABELS[pedido.status] || pedido.status;
-    const trav = pedido.total_travessia_brl || 0;
-    const com = pedido.total_comissao_brl || 0;
+    const pedido  = pedidos.find(p => p.id === pedidoId);
+    if (!pedido) { await send(phone, 'Diga que o pedido não foi encontrado.', {}, 'Pedido não encontrado.'); return; }
 
-    let msg = `📦 Pedido #${String(pedido.id).padStart(3, '0')}\nStatus: ${label}\n\nProdutos:\n${prods}`;
-    if (trav > 0) msg += `\n\nTaxa de travessia: ${fmtCur(trav)}`;
-    if (com > 0) msg += `\nComissão: ${fmtCur(com)}`;
-    if (pedido.codigo_rastreio) msg += `\n\nRastreio: ${pedido.codigo_rastreio}`;
-    await sendText(phone, msg, true);
+    const prods = (pedido.produtos || []).map(pr => `${pr.descricao} (${pr.quantidade}x)`).join(', ');
+    const trav  = pedido.total_travessia_brl || 0;
+    const com   = pedido.total_comissao_brl  || 0;
+    const ctx   = {
+      clienteNome: dados.cliente_nome,
+      extra: `Pedido #${pedido.id} | Status: ${STATUS_LABELS[pedido.status] || pedido.status} | Produtos: ${prods}` +
+        (trav > 0 ? ` | Travessia: ${fmtCur(trav)}` : '') +
+        (com  > 0 ? ` | Comissão: ${fmtCur(com)}`  : '') +
+        (pedido.codigo_rastreio ? ` | Rastreio: ${pedido.codigo_rastreio}` : ''),
+    };
+    await send(phone, 'Apresente os detalhes deste pedido de forma clara e amigável.', ctx,
+      `📦 Pedido #${String(pedido.id).padStart(3,'0')}\nStatus: ${STATUS_LABELS[pedido.status] || pedido.status}\nProdutos: ${prods}`, 300);
     await clearConversa(phone);
   }
 }
@@ -226,17 +222,18 @@ async function handleFlow2(phone, estado, body) {
 // ── flow 3: ver o que devo ────────────────────────────────────────────────────
 
 async function handleFlow3(phone, estado, body) {
-  const conv = await getConversa(phone);
+  const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
   if (estado === 'flow3_cpf') {
     const cpf = normCpf(body);
     if (cpf.length !== 11) {
-      await sendText(phone, 'CPF inválido. Por favor, digite somente os 11 números do seu CPF.', true);
+      await send(phone, 'Peça o CPF com 11 dígitos.', { estado }, 'CPF inválido. Digite os 11 números.');
       return;
     }
     dados.cpf = cpf;
-    await sendText(phone, 'Agora digite os 4 últimos dígitos do seu telefone.', true);
+    await send(phone, 'Confirme CPF e peça os 4 últimos dígitos do telefone.', { estado, dados },
+      'Agora os 4 últimos dígitos do seu telefone.');
     await setConversa(phone, { estado: 'flow3_digitos', dados });
     return;
   }
@@ -244,48 +241,48 @@ async function handleFlow3(phone, estado, body) {
   if (estado === 'flow3_digitos') {
     const digitos = (body || '').replace(/\D/g, '').slice(-4);
     if (digitos.length !== 4) {
-      await sendText(phone, 'Por favor, digite somente os 4 últimos dígitos do seu telefone.', true);
+      await send(phone, 'Peça somente os 4 últimos dígitos do telefone.', { estado },
+        'Digite somente os 4 últimos dígitos do telefone.');
       return;
     }
     const cliente = await findClienteByCpfDigitos(dados.cpf, digitos);
     if (!cliente) {
-      await sendText(
-        phone,
-        'CPF ou telefone não encontrado. Verifique os dados e tente novamente.',
-        true
-      );
+      await send(phone, 'Informe que os dados não foram encontrados.', { estado },
+        'CPF ou telefone não encontrado. Verifique e tente novamente.');
       await setConversa(phone, { estado: 'flow3_cpf', dados: {} });
-      await sendText(phone, 'Por favor, digite seu CPF (somente números).', true);
       return;
     }
     const pedidos = await getPedidosPendentes(cliente.id);
-    if (pedidos.length === 0) {
-      await sendText(phone, `Olá ${cliente.nome}! Você não tem valores em aberto no momento. 😊`, true);
+    if (!pedidos.length) {
+      await send(phone, `Informe a ${cliente.nome} que não há valores em aberto. Use um tom positivo.`,
+        { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem valores em aberto. 😊`);
       await clearConversa(phone);
       return;
     }
     let total = 0;
-    let msg = `💰 Valores em aberto, ${cliente.nome}:\n`;
-    for (const p of pedidos) {
+    const itens = pedidos.map(p => {
       const trav = p.total_travessia_brl || 0;
-      const com = p.total_comissao_brl || 0;
-      const desc =
-        (p.produtos || []).map((pr) => pr.descricao).filter(Boolean).join(', ') ||
-        `Pedido #${p.id}`;
-      msg += `\nPedido #${String(p.id).padStart(3, '0')} — ${desc}`;
+      const com  = p.total_comissao_brl  || 0;
+      const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
+      let linha  = `Pedido #${String(p.id).padStart(3,'0')} — ${desc}`;
       if (p.status === 'aguardando_pgto_travessia' && trav > 0) {
-        const qtd = (p.produtos || []).reduce((s, pr) => s + (Number(pr.quantidade) || 0), 0);
-        const travUnit = qtd > 0 ? trav / qtd : trav;
-        msg += `\nTaxa de travessia: ${fmtCur(trav)} (${qtd} itens × ${fmtCur(travUnit)})`;
+        const qtd = (p.produtos||[]).reduce((s,pr) => s + (Number(pr.quantidade)||0), 0);
+        linha += ` | Travessia: ${fmtCur(trav)} (${qtd}x ${fmtCur(trav/Math.max(qtd,1))})`;
         total += trav;
       }
       if (p.status === 'aguardando_pgto_comissao' && com > 0) {
-        msg += `\nComissão: ${fmtCur(com)}`;
-        total += com;
+        linha += ` | Comissão: ${fmtCur(com)}`; total += com;
       }
-    }
-    msg += `\n\n💵 Total a pagar: ${fmtCur(total)}`;
-    await sendText(phone, msg, true);
+      return linha;
+    }).join('\n');
+
+    const ctx = {
+      clienteNome: cliente.nome,
+      extra: `Valores em aberto:\n${itens}\nTotal: ${fmtCur(total)}`,
+    };
+    await send(phone,
+      `Apresente os valores em aberto de ${cliente.nome} de forma clara, incluindo o total. Mencione que pode pagar pelo fluxo 4.`,
+      ctx, `💰 Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}`, 400);
     await clearConversa(phone);
   }
 }
@@ -293,123 +290,80 @@ async function handleFlow3(phone, estado, body) {
 // ── flow 4: avisar pagamento ──────────────────────────────────────────────────
 
 async function iniciarFlow4(phone) {
-  await sendText(phone, 'Por favor, envie o comprovante de pagamento.', true);
+  await send(phone, 'Peça para o cliente enviar o comprovante de pagamento (foto ou PDF).', { estado: 'flow4_comprovante' },
+    'Por favor, envie o comprovante de pagamento.');
   await setConversa(phone, { estado: 'flow4_comprovante', dados: {} });
 }
 
 async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
-  const conv = await getConversa(phone);
+  const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
   if (estado === 'flow4_comprovante') {
     if (!mediaUrl) {
-      await sendText(phone, 'Por favor, envie o comprovante de pagamento (foto ou PDF).', true);
+      await send(phone, 'Lembre que precisa enviar o comprovante como foto ou PDF.', { estado },
+        'Envie o comprovante como foto ou PDF.');
       return;
     }
-    // Tenta buscar o nome do cliente pelo WhatsApp
     const clienteLookup = await findClienteByWhatsapp(phone);
-    const clienteNome = clienteLookup?.nome || phone;
-
-    // Confirmação ao cliente
-    await sendText(phone, '✅ Comprovante recebido! Aguarde a confirmação do operador.', true);
-
-    // Registra o pendente e vincula à conversa do operador
-    const pendenteId = await addPendentePagamento(phone, clienteNome);
-    await updateConversa(OPERATOR_PHONE, {
-      dados: { pendente_id: pendenteId, pendente_cliente_phone: phone },
-    });
-
-    // Notifica operador com o comprovante
-    const msgOp =
-      `💳 Aviso de pagamento!\n` +
-      `Cliente: ${phone} — ${clienteNome}\n` +
-      `Responda OK para confirmar ou NÃO para recusar.`;
-    await sendText(OPERATOR_PHONE, msgOp, true);
-    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
-
+    const clienteNome   = clienteLookup?.nome || phone;
     await clearConversa(phone);
+    await send(phone, 'Confirme que o comprovante foi recebido e diga que o operador irá verificar.', {},
+      '✅ Comprovante recebido! Aguarde a confirmação do operador.');
+    const pendenteId = await addPendentePagamento(phone, clienteNome);
+    await updateConversa(OPERATOR_PHONE, { dados: { pendente_id: pendenteId, pendente_cliente_phone: phone } });
+    await sendText(OPERATOR_PHONE,
+      `💳 Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nResponda OK para confirmar ou NÃO para recusar.`, true);
+    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
     return;
   }
 
   if (estado === 'flow4_etiqueta') {
     if (!mediaUrl) {
-      await sendText(phone, 'Por favor, envie a etiqueta de postagem.', true);
+      await send(phone, 'Lembre que precisa enviar a etiqueta de postagem.', { estado },
+        'Por favor, envie a etiqueta de postagem.');
       return;
     }
     const clienteNome = dados.cliente_nome || phone;
-
-    // Confirmação ao cliente
-    await sendText(phone, '📦 Etiqueta recebida! Em breve sua encomenda será despachada.', true);
-
-    // Encaminha etiqueta ao operador
-    const msgOp = `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}`;
-    await sendText(OPERATOR_PHONE, msgOp, true);
-    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
-
     await clearConversa(phone);
+    await send(phone, 'Confirme que a etiqueta foi recebida e diga que a encomenda será despachada em breve.', {},
+      '📦 Etiqueta recebida! Em breve sua encomenda será despachada.');
+    await sendText(OPERATOR_PHONE, `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}`, true);
+    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
   }
 }
 
-// ── resposta do operador (OK / NÃO) ──────────────────────────────────────────
+// ── operador: OK / NÃO ────────────────────────────────────────────────────────
 
 async function handleOperadorResposta(body) {
-  const upper = (body || '').trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const upper = (body || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
   const confirmado = upper === 'OK';
-  const recusado = upper === 'NAO' || upper === 'NÃO' || upper === 'NAO';
+  const recusado   = upper === 'NAO' || upper === 'NÃO';
   if (!confirmado && !recusado) return false;
 
   const pendente = await getPendenteAtual(OPERATOR_PHONE);
   if (!pendente) {
-    await sendText(OPERATOR_PHONE, 'Nenhum pagamento pendente de confirmação no momento.', true);
+    await sendText(OPERATOR_PHONE, 'Nenhum pagamento pendente de confirmação.', true);
     return true;
   }
-
   await resolverPendente(pendente.id, confirmado);
 
   if (confirmado) {
-    await sendText(
-      pendente.cliente_numero,
-      '✅ Pagamento confirmado! Por favor, envie a etiqueta de postagem aqui no WhatsApp.',
-      true
-    );
-    // Coloca cliente no estado de aguardar etiqueta
+    await send(pendente.cliente_numero,
+      'Informe que o pagamento foi confirmado e peça para enviar a etiqueta de postagem.',
+      {}, '✅ Pagamento confirmado! Envie a etiqueta de postagem aqui no WhatsApp.');
     await setConversa(pendente.cliente_numero, {
       estado: 'flow4_etiqueta',
-      dados: { cliente_nome: pendente.cliente_nome },
+      dados:  { cliente_nome: pendente.cliente_nome },
     });
   } else {
-    await sendText(
-      pendente.cliente_numero,
-      '❌ Não foi possível confirmar seu pagamento. Por favor, entre em contato com o operador.',
-      true
-    );
+    await send(pendente.cliente_numero,
+      'Informe que não foi possível confirmar o pagamento e peça para entrar em contato com o operador.',
+      {}, '❌ Pagamento não confirmado. Entre em contato com o operador.');
   }
-
-  // Limpa o pendente atual da conversa do operador
   await updateConversa(OPERATOR_PHONE, { dados: {} });
   return true;
-}
-
-// ── Claude: detectar intenção em texto livre ──────────────────────────────────
-
-async function detectarIntencao(texto) {
-  if (!texto?.trim()) return 0;
-  try {
-    const resp = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 5,
-      system:
-        'Classifique a intenção do cliente de importação. Responda SOMENTE com um número:\n' +
-        '1=enviar nota fiscal  2=ver status do pedido  3=ver débitos/valores\n' +
-        '4=avisar pagamento realizado  5=falar com o operador  0=não identificado',
-      messages: [{ role: 'user', content: texto }],
-    });
-    const num = parseInt((resp.content[0]?.text || '0').trim());
-    return Number.isInteger(num) && num >= 0 && num <= 5 ? num : 0;
-  } catch (err) {
-    logger.warn('[claude] Falha ao detectar intenção:', err.message);
-    return 0;
-  }
 }
 
 // ── roteador principal ────────────────────────────────────────────────────────
@@ -417,86 +371,81 @@ async function detectarIntencao(texto) {
 async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   const normalPhone = normalizePhone(phone);
 
-  // Mensagens do próprio operador
+  // Mensagens do operador
   if (normalPhone === OPERATOR_PHONE) {
     await handleOperadorResposta(body);
     return;
   }
 
-  // Verificar timeout — reinicia o fluxo se inativo por 10 min
+  // Timeout — reinicia o fluxo
   const conv = await getConversa(normalPhone);
-  if (conv && !['idle', 'menu'].includes(conv.estado) && isTimedOut(conv)) {
-    await sendText(normalPhone, 'Sua sessão expirou por inatividade. Vou reiniciar o atendimento.', true);
+  if (conv && !['idle','menu'].includes(conv.estado) && isTimedOut(conv)) {
+    await send(normalPhone,
+      'Informe que a sessão expirou por inatividade e que vai reiniciar o atendimento.',
+      {}, 'Sua sessão expirou. Vou reiniciar o atendimento.');
     await clearConversa(normalPhone);
   }
 
-  // Estado atual (lê novamente caso tenha sido limpo acima)
-  const conv2 = await getConversa(normalPhone) || { estado: 'idle', dados: {} };
+  const conv2  = await getConversa(normalPhone) || { estado: 'idle', dados: {} };
   const estado = conv2.estado || 'idle';
   const bodyNorm = (body || '').trim();
 
-  // Comando global "menu" sempre reinicia o menu, independente do estado
+  // Comando global "menu"
   if (bodyNorm.toLowerCase() === 'menu') {
-    await showMenu(normalPhone);
+    const clienteNome = conv2.dados?.cliente_nome || '';
+    await showMenu(normalPhone, clienteNome);
     return;
   }
 
-  // Fluxos ativos — rota para o handler correto
-  if (estado.startsWith('flow1_')) {
-    await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType);
-    return;
-  }
-  if (estado.startsWith('flow2_')) {
-    await handleFlow2(normalPhone, estado, bodyNorm);
-    return;
-  }
-  if (estado.startsWith('flow3_')) {
-    await handleFlow3(normalPhone, estado, bodyNorm);
-    return;
-  }
-  if (estado.startsWith('flow4_')) {
-    await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl, mimeType);
-    return;
-  }
+  // Fluxos ativos
+  if (estado.startsWith('flow1_')) { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
+  if (estado.startsWith('flow2_')) { await handleFlow2(normalPhone, estado, bodyNorm); return; }
+  if (estado.startsWith('flow3_')) { await handleFlow3(normalPhone, estado, bodyNorm); return; }
+  if (estado.startsWith('flow4_')) { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
 
-  // Estado idle ou menu — interpreta seleção numérica
-  if (estado === 'idle' || estado === 'menu') {
-    if (/^[1-5]$/.test(bodyNorm)) {
-      switch (bodyNorm) {
-        case '1':
-          await iniciarFlow1(normalPhone);
-          return;
-        case '2':
-          await setConversa(normalPhone, { estado: 'flow2_cpf', dados: {} });
-          await sendText(normalPhone, 'Por favor, digite seu CPF (somente números).', true);
-          return;
-        case '3':
-          await setConversa(normalPhone, { estado: 'flow3_cpf', dados: {} });
-          await sendText(normalPhone, 'Por favor, digite seu CPF (somente números).', true);
-          return;
-        case '4':
-          await iniciarFlow4(normalPhone);
-          return;
-        case '5':
-          await sendText(normalPhone, 'Vou chamar o operador. Aguarde um momento. 👋', true);
-          await sendText(OPERATOR_PHONE, `📞 Cliente ${normalPhone} quer falar com você.`, true);
-          await clearConversa(normalPhone);
-          return;
-      }
-    }
-
-    // Texto livre — tenta detectar intenção via Claude antes de exibir o menu
-    if (bodyNorm.length > 2) {
-      const intencao = await detectarIntencao(bodyNorm);
-      if (intencao >= 1 && intencao <= 5) {
-        // Repete a rota com o número detectado
-        await handleMessage(normalPhone, 'text', String(intencao), null, null);
+  // Estado idle/menu — interpreta seleção ou texto livre
+  if (/^[1-5]$/.test(bodyNorm)) {
+    switch (bodyNorm) {
+      case '1': await iniciarFlow1(normalPhone); return;
+      case '2':
+        await setConversa(normalPhone, { estado: 'flow2_cpf', dados: {} });
+        await send(normalPhone, 'Peça o CPF do cliente (somente números).', { estado: 'flow2_cpf' },
+          'Digite seu CPF (somente números).');
         return;
-      }
+      case '3':
+        await setConversa(normalPhone, { estado: 'flow3_cpf', dados: {} });
+        await send(normalPhone, 'Peça o CPF do cliente (somente números).', { estado: 'flow3_cpf' },
+          'Digite seu CPF (somente números).');
+        return;
+      case '4': await iniciarFlow4(normalPhone); return;
+      case '5':
+        await send(normalPhone, 'Informe que vai chamar o operador e peça para aguardar.', {},
+          'Vou chamar o operador. Aguarde um momento. 👋');
+        await sendText(OPERATOR_PHONE, `📞 Cliente ${normalPhone} quer falar com você.`, true);
+        await clearConversa(normalPhone);
+        return;
     }
   }
 
-  // Fallback: exibe o menu
+  // Texto livre — Claude detecta intenção
+  if (bodyNorm.length > 2) {
+    const intencao = await detectarIntencao(bodyNorm);
+    if (intencao >= 1 && intencao <= 5) {
+      await handleMessage(normalPhone, 'text', String(intencao), null, null);
+      return;
+    }
+    // Claude responde a perguntas fora do script
+    const respostaLivre = await responder(
+      { estado, extra: 'O cliente enviou uma mensagem fora dos fluxos esperados.' },
+      bodyNorm, 250
+    );
+    if (respostaLivre) {
+      await sendText(normalPhone, respostaLivre, true);
+      return;
+    }
+  }
+
+  // Fallback: mostra menu
   await showMenu(normalPhone);
 }
 
