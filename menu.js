@@ -120,9 +120,9 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
     }
     // Limpa estado ANTES de enviar para evitar loop
     await clearConversa(phone);
-    await send(phone, 'Confirme que a nota foi recebida e diga que em breve será cadastrada.', {},
-      '✅ Nota recebida! Em breve será cadastrada no sistema.');
-    // Notifica operador por texto (a imagem fica na conversa do agente)
+    // Confirmação fixa — não usa Claude para evitar resposta errada
+    await sendText(phone, '✅ Nota recebida! Em breve será cadastrada no sistema.', true);
+    // Notifica operador por texto
     await sendText(OPERATOR_PHONE,
       `📸 Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
   }
@@ -307,8 +307,7 @@ async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
     const clienteLookup = await findClienteByWhatsapp(phone);
     const clienteNome   = clienteLookup?.nome || phone;
     await clearConversa(phone);
-    await send(phone, 'Confirme que o comprovante foi recebido e diga que o operador irá verificar.', {},
-      '✅ Comprovante recebido! Aguarde a confirmação do operador.');
+    await sendText(phone, '✅ Comprovante recebido! Aguarde a confirmação do operador.', true);
     const pendenteId = await addPendentePagamento(phone, clienteNome);
     await updateConversa(OPERATOR_PHONE, { dados: { pendente_id: pendenteId, pendente_cliente_phone: phone } });
     await sendText(OPERATOR_PHONE,
@@ -324,8 +323,7 @@ async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
     }
     const clienteNome = dados.cliente_nome || phone;
     await clearConversa(phone);
-    await send(phone, 'Confirme que a etiqueta foi recebida e diga que a encomenda será despachada em breve.', {},
-      '📦 Etiqueta recebida! Em breve sua encomenda será despachada.');
+    await sendText(phone, '📦 Etiqueta recebida! Em breve sua encomenda será despachada.', true);
     await sendText(OPERATOR_PHONE, `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
   }
 }

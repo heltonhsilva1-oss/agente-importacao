@@ -49,12 +49,20 @@ async function responder(ctx, instrucao, maxTokens = 200) {
 
   const systemPrompt = partes.join('\n');
 
+  // A instrução é um comando interno para Claude — não é o que o cliente enviou.
+  // Estrutura clara: sistema define o contexto, usuário pede a ação, Claude escreve a mensagem.
+  const mensagemParaClaude =
+    `[INSTRUÇÃO INTERNA — não mostrar ao cliente]\n` +
+    `Escreva UMA mensagem de WhatsApp para enviar ao cliente agora.\n` +
+    `O que você deve comunicar: ${instrucao}\n\n` +
+    `Responda APENAS com o texto da mensagem, sem explicações, sem aspas.`;
+
   try {
     const resp = await client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: maxTokens,
       system: systemPrompt,
-      messages: [{ role: 'user', content: instrucao }],
+      messages: [{ role: 'user', content: mensagemParaClaude }],
     });
     return (resp.content[0]?.text || '').trim();
   } catch (err) {
