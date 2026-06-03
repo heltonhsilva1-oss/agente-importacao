@@ -7,7 +7,8 @@ const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
 const { setConversa } = require('./firestore');
 
-const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
+const AGENT_PHONE  = process.env.AGENT_PHONE  || '5511961482602';
+const PORTAL_URL   = process.env.PORTAL_URL   || 'https://minhaimportacao-5442a.web.app/portal';
 
 function fmtCur(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -28,29 +29,41 @@ async function getClienteById(clienteId) {
   return snap.empty ? null : snap.docs[0].data();
 }
 
-function buildMensagemStatus(status, nome, trav, com) {
-  const wa = `https://wa.me/${AGENT_PHONE}`;
+function buildMensagemStatus(status, nome, trav, com, phone) {
+  const wa     = `https://wa.me/${AGENT_PHONE}`;
+  const portal = phone
+    ? `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`
+    : PORTAL_URL;
+
   const msgs = {
     retirado_paraguai:
-      `Olá ${nome}! Sua mercadoria foi retirada no Paraguai. 🇵🇾`,
+      `Olá ${nome}! Sua mercadoria foi retirada no Paraguai. 🇵🇾\n\n` +
+      `🔗 Acompanhe no portal: ${portal}`,
     aguardando_pgto_travessia:
       `Olá ${nome}! Sua mercadoria está pronta para embarcar.\n` +
-      `O valor da taxa de travessia é *${fmtCur(trav)}*.\n` +
-      `Acesse o WhatsApp do agente para avisar o pagamento: ${wa}`,
+      `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
+      `💳 Avise o pagamento: ${wa}\n🔗 Ver detalhes: ${portal}`,
     em_transito:
-      `Olá ${nome}! Sua mercadoria está a caminho de São Paulo. 🚚`,
+      `Olá ${nome}! Sua mercadoria está a caminho de São Paulo. 🚚\n\n` +
+      `🔗 Acompanhe no portal: ${portal}`,
     chegou_sp:
-      `Olá ${nome}! Sua mercadoria chegou em São Paulo! 🎉`,
+      `Olá ${nome}! Sua mercadoria chegou em São Paulo! 🎉\n\n` +
+      `🔗 Ver detalhes no portal: ${portal}`,
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
-      `O valor da comissão é *${fmtCur(com)}*.\n` +
-      `Acesse o WhatsApp do agente para avisar o pagamento: ${wa}`,
+      `O valor da comissão é *${fmtCur(com)}*.\n\n` +
+      `💳 Avise o pagamento: ${wa}\n🔗 Ver detalhes: ${portal}`,
     aguardando_etiqueta:
-      `Olá ${nome}! Pagamento confirmado. Por favor, envie a etiqueta de postagem no WhatsApp do agente: ${wa}`,
+      `Olá ${nome}! Pagamento confirmado. ✅\n\n` +
+      `🔗 Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
+      `Depois envie a etiqueta de postagem aqui: ${wa}`,
     aguardando_envio:
-      `Olá ${nome}! Sua etiqueta foi confirmada. Em breve sua encomenda será postada. 📦`,
+      `Olá ${nome}! Sua etiqueta foi confirmada. Em breve sua encomenda será postada. 📦\n\n` +
+      `🔗 Acompanhe no portal: ${portal}`,
     postado:
-      `Olá ${nome}! Sua encomenda foi postada. Acompanhe pelo código da etiqueta que você gerou. ✅`,
+      `Olá ${nome}! Sua encomenda foi postada. ✅\n` +
+      `Acompanhe pelo código da etiqueta que você gerou.\n\n` +
+      `🔗 Ver no portal: ${portal}`,
   };
   return msgs[status] || null;
 }
@@ -106,7 +119,8 @@ function setupListeners() {
             pedido.status,
             cliente.nome,
             pedido.total_travessia_brl || 0,
-            pedido.total_comissao_brl || 0
+            pedido.total_comissao_brl || 0,
+            phone
           );
 
           if (msg) {

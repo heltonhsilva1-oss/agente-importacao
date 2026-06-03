@@ -7,14 +7,15 @@ const { logger } = require('./logger');
 const { responder, detectarIntencao } = require('./claude');
 const {
   getConversa, setConversa, updateConversa, clearConversa,
-  findClienteByCpfDigitos, findClienteByWhatsapp,
+  findClienteByWhatsapp,
   getPedidosAtivos, getPedidosPendentes,
   addPendentePagamento, getPendenteAtual, resolverPendente,
 } = require('./firestore');
-const { sendText, sendMedia } = require('./uazapi');
+const { sendText } = require('./uazapi');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
+const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TIMEOUT_MS     = 10 * 60 * 1000;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -23,12 +24,14 @@ function fmtCur(v) {
   return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function normCpf(s) { return (s || '').replace(/\D/g, ''); }
-
 function normalizePhone(phone) {
   if ((phone || '').includes('@')) return phone;
   const d = (phone || '').replace(/\D/g, '');
   return d.startsWith('55') && d.length >= 12 ? d : `55${d}`;
+}
+
+function portalLink(phone) {
+  return `${PORTAL_URL}?tel=${(phone || '').replace(/[^0-9]/g, '')}`;
 }
 
 function isTimedOut(conv) {
@@ -40,15 +43,15 @@ function isTimedOut(conv) {
 }
 
 const STATUS_LABELS = {
-  nota_recebida:              'Nota Recebida 📝',
-  retirado_paraguai:          'Retirado no Paraguai 🇵🇾',
-  aguardando_pgto_travessia:  'Aguardando Pgto. Travessia 💰',
-  em_transito:                'Em Trânsito 🚚',
-  chegou_sp:                  'Chegou em SP 🎉',
-  aguardando_pgto_comissao:   'Aguardando Pgto. Comissão 💰',
-  aguardando_etiqueta:        'Aguardando Etiqueta 🏷️',
-  aguardando_envio:           'Aguardando Envio 📦',
-  postado:                    'Postado ✅',
+  nota_recebida:             'Nota Recebida 📝',
+  retirado_paraguai:         'Retirado no Paraguai 🇵🇾',
+  aguardando_pgto_travessia: 'Aguardando Pgto. Travessia 💰',
+  em_transito:               'Em Trânsito 🚚',
+  chegou_sp:                 'Chegou em SP 🎉',
+  aguardando_pgto_comissao:  'Aguardando Pgto. Comissão 💰',
+  aguardando_etiqueta:       'Aguardando Etiqueta 🏷️',
+  aguardando_envio:          'Aguardando Envio 📦',
+  postado:                   'Postado ✅',
 };
 
 // Envia mensagem gerada pelo Claude ou usa fallback fixo se Claude falhar
@@ -76,13 +79,12 @@ async function showMenu(phone, clienteNome = '') {
 // ── flow 1: enviar nota fiscal ────────────────────────────────────────────────
 
 async function iniciarFlow1(phone) {
-  const ctx = { estado: 'flow1_loja' };
-  await send(phone, 'Peça o nome da loja de onde veio a mercadoria.', ctx,
+  await send(phone, 'Peça o nome da loja de onde veio a mercadoria.', { estado: 'flow1_loja' },
     'Por favor, me informe o nome da loja.');
   await setConversa(phone, { estado: 'flow1_loja', dados: {} });
 }
 
-async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
+async function handleFlow1(phone, estado, body, mediaUrl) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
@@ -92,8 +94,7 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
       return;
     }
     dados.loja = body.trim();
-    const ctx = { estado: 'flow1_vendedor', dados };
-    await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', ctx,
+    await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', { estado: 'flow1_vendedor', dados },
       'Agora me informe o nome do vendedor.');
     await setConversa(phone, { estado: 'flow1_vendedor', dados });
     return;
@@ -105,8 +106,7 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
       return;
     }
     dados.vendedor = body.trim();
-    const ctx = { estado: 'flow1_arquivo', dados };
-    await send(phone, 'Confirme loja e vendedor recebidos e peça para enviar a nota fiscal (foto, print ou PDF).', ctx,
+    await send(phone, 'Confirme loja e vendedor recebidos e peça para enviar a nota fiscal (foto, print ou PDF).', { estado: 'flow1_arquivo', dados },
       'Agora envie a foto, print ou PDF da nota fiscal.');
     await setConversa(phone, { estado: 'flow1_arquivo', dados });
     return;
@@ -118,172 +118,119 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
         'Por favor, envie a foto, print ou PDF da nota fiscal.');
       return;
     }
-    // Limpa estado ANTES de enviar para evitar loop
     await clearConversa(phone);
-    // Confirmação fixa — não usa Claude para evitar resposta errada
     await sendText(phone, '✅ Nota recebida! Em breve será cadastrada no sistema.', true);
-    // Notifica operador por texto
     await sendText(OPERATOR_PHONE,
       `📸 Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
   }
 }
 
-// ── flow 2: ver status do pedido ──────────────────────────────────────────────
+// ── flow 2: ver status (direto, sem CPF) ──────────────────────────────────────
 
-async function handleFlow2(phone, estado, body) {
-  const conv  = await getConversa(phone);
-  const dados = conv?.dados || {};
+async function iniciarFlow2(phone, cliente) {
+  const pedidos = await getPedidosAtivos(cliente.id);
+  const link    = portalLink(phone);
 
-  if (estado === 'flow2_cpf') {
-    const cpf = normCpf(body);
-    if (cpf.length !== 11) {
-      await send(phone, 'Explique que o CPF deve ter 11 dígitos e peça novamente.', { estado },
-        'CPF inválido. Digite somente os 11 números do seu CPF.');
-      return;
-    }
-    dados.cpf = cpf;
-    await send(phone, 'Confirme que recebeu o CPF e peça os 4 últimos dígitos do telefone cadastrado.', { estado, dados },
-      'Agora digite os 4 últimos dígitos do seu telefone.');
-    await setConversa(phone, { estado: 'flow2_digitos', dados });
+  if (!pedidos.length) {
+    await send(phone, `Informe ${cliente.nome} que não há pedidos ativos no momento.`,
+      { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem pedidos ativos no momento.`);
     return;
   }
 
-  if (estado === 'flow2_digitos') {
-    const digitos = (body || '').replace(/\D/g, '').slice(-4);
-    if (digitos.length !== 4) {
-      await send(phone, 'Peça apenas os 4 últimos dígitos do telefone.', { estado },
-        'Digite somente os 4 últimos dígitos do seu telefone.');
-      return;
-    }
-    const cliente = await findClienteByCpfDigitos(dados.cpf, digitos);
-    if (!cliente) {
-      await send(phone, 'Informe que CPF ou telefone não foram encontrados e ofereça tentar novamente.', { estado },
-        'CPF ou telefone não encontrado. Verifique e tente novamente.');
-      await setConversa(phone, { estado: 'flow2_cpf', dados: {} });
-      return;
-    }
-    const pedidos = await getPedidosAtivos(cliente.id);
-    if (!pedidos.length) {
-      await send(phone, `Informe a ${cliente.nome} que não há pedidos ativos no momento.`,
-        { estado, clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem pedidos ativos no momento.`);
-      await clearConversa(phone);
-      return;
-    }
-    // Monta lista de pedidos para o Claude formatar
-    const listaPedidos = pedidos.map((p, i) => {
-      const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
-      return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} | Status: ${STATUS_LABELS[p.status] || p.status}`;
-    }).join('\n');
+  const listaPedidos = pedidos.map((p, i) => {
+    const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
+    return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} | ${STATUS_LABELS[p.status] || p.status}`;
+  }).join('\n');
 
-    const ctx = {
-      estado: 'flow2_selecao',
-      clienteNome: cliente.nome,
-      extra: `Pedidos ativos:\n${listaPedidos}`,
-    };
-    await send(phone,
-      `Liste os pedidos ativos de ${cliente.nome} de forma clara e peça para digitar o número do pedido para mais detalhes ou 0 para voltar ao menu.`,
-      ctx, `📦 Seus pedidos:\n${listaPedidos}\n\nDigite o número do pedido ou 0 para voltar.`, 400);
-    dados.cliente_id   = cliente.id;
-    dados.cliente_nome = cliente.nome;
-    dados.pedidos_ids  = pedidos.map(p => p.id);
-    await setConversa(phone, { estado: 'flow2_selecao', dados });
-    return;
-  }
+  const ctx = {
+    estado: 'flow2_selecao',
+    clienteNome: cliente.nome,
+    extra: `Pedidos:\n${listaPedidos}\nLink portal (fotos e detalhes): ${link}`,
+  };
+  await send(phone,
+    `Liste os pedidos de ${cliente.nome} de forma clara. Inclua o link do portal para ver fotos e detalhes. Peça para digitar o número do pedido ou 0 para voltar.`,
+    ctx, `📦 Seus pedidos:\n${listaPedidos}\n\n🔗 Ver fotos e detalhes: ${link}\n\nDigite o número do pedido ou 0 para voltar.`, 450);
 
-  if (estado === 'flow2_selecao') {
-    if (body === '0') { await clearConversa(phone); await showMenu(phone, dados.cliente_nome); return; }
-    const pedidoId = parseInt(body);
-    if (isNaN(pedidoId) || !(dados.pedidos_ids || []).includes(pedidoId)) {
-      await send(phone, 'Diga que a opção é inválida e peça para digitar um número de pedido válido ou 0 para voltar.', {},
-        'Opção inválida. Digite o número do pedido ou 0 para voltar.');
-      return;
-    }
-    const pedidos = await getPedidosAtivos(dados.cliente_id);
-    const pedido  = pedidos.find(p => p.id === pedidoId);
-    if (!pedido) { await send(phone, 'Diga que o pedido não foi encontrado.', {}, 'Pedido não encontrado.'); return; }
-
-    const prods = (pedido.produtos || []).map(pr => `${pr.descricao} (${pr.quantidade}x)`).join(', ');
-    const trav  = pedido.total_travessia_brl || 0;
-    const com   = pedido.total_comissao_brl  || 0;
-    const ctx   = {
-      clienteNome: dados.cliente_nome,
-      extra: `Pedido #${pedido.id} | Status: ${STATUS_LABELS[pedido.status] || pedido.status} | Produtos: ${prods}` +
-        (trav > 0 ? ` | Travessia: ${fmtCur(trav)}` : '') +
-        (com  > 0 ? ` | Comissão: ${fmtCur(com)}`  : '') +
-        (pedido.codigo_rastreio ? ` | Rastreio: ${pedido.codigo_rastreio}` : ''),
-    };
-    await send(phone, 'Apresente os detalhes deste pedido de forma clara e amigável.', ctx,
-      `📦 Pedido #${String(pedido.id).padStart(3,'0')}\nStatus: ${STATUS_LABELS[pedido.status] || pedido.status}\nProdutos: ${prods}`, 300);
-    await clearConversa(phone);
-  }
+  await setConversa(phone, {
+    estado: 'flow2_selecao',
+    dados:  { cliente_id: cliente.id, cliente_nome: cliente.nome, pedidos_ids: pedidos.map(p => p.id) },
+  });
 }
 
-// ── flow 3: ver o que devo ────────────────────────────────────────────────────
-
-async function handleFlow3(phone, estado, body) {
+async function handleFlow2Selecao(phone, body) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
-  if (estado === 'flow3_cpf') {
-    const cpf = normCpf(body);
-    if (cpf.length !== 11) {
-      await send(phone, 'Peça o CPF com 11 dígitos.', { estado }, 'CPF inválido. Digite os 11 números.');
-      return;
-    }
-    dados.cpf = cpf;
-    await send(phone, 'Confirme CPF e peça os 4 últimos dígitos do telefone.', { estado, dados },
-      'Agora os 4 últimos dígitos do seu telefone.');
-    await setConversa(phone, { estado: 'flow3_digitos', dados });
+  if (body === '0') { await clearConversa(phone); return true; }
+
+  const pedidoId = parseInt(body);
+  if (isNaN(pedidoId) || !(dados.pedidos_ids || []).includes(pedidoId)) {
+    await send(phone, 'Diga que a opção é inválida e peça um número válido ou 0 para voltar.', {},
+      'Opção inválida. Digite o número do pedido ou 0 para voltar.');
+    return true;
+  }
+
+  const pedidos = await getPedidosAtivos(dados.cliente_id);
+  const pedido  = pedidos.find(p => p.id === pedidoId);
+  if (!pedido) { await send(phone, 'Pedido não encontrado.', {}, 'Pedido não encontrado.'); return true; }
+
+  const prods = (pedido.produtos || []).map(pr => `${pr.descricao} (${pr.quantidade}x)`).join(', ');
+  const trav  = pedido.total_travessia_brl || 0;
+  const com   = pedido.total_comissao_brl  || 0;
+  const link  = portalLink(phone);
+
+  const ctx = {
+    clienteNome: dados.cliente_nome,
+    extra:
+      `Pedido #${pedido.id} | Status: ${STATUS_LABELS[pedido.status] || pedido.status} | Produtos: ${prods}` +
+      (trav > 0 ? ` | Travessia: ${fmtCur(trav)}` : '') +
+      (com  > 0 ? ` | Comissão: ${fmtCur(com)}`  : '') +
+      (pedido.codigo_rastreio ? ` | Rastreio: ${pedido.codigo_rastreio}` : '') +
+      `\nLink portal para fotos e detalhes completos: ${link}`,
+  };
+  await send(phone,
+    'Apresente os detalhes do pedido de forma clara e amigável. Inclua o link do portal para o cliente ver fotos e informações completas.',
+    ctx, `📦 Pedido #${String(pedido.id).padStart(3,'0')}\n${STATUS_LABELS[pedido.status] || pedido.status}\n${prods}\n\n🔗 Ver detalhes: ${link}`, 350);
+  await clearConversa(phone);
+  return true;
+}
+
+// ── flow 3: ver débitos (direto, sem CPF) ─────────────────────────────────────
+
+async function iniciarFlow3(phone, cliente) {
+  const pedidos = await getPedidosPendentes(cliente.id);
+  const link    = portalLink(phone);
+
+  if (!pedidos.length) {
+    await send(phone, `Informe ${cliente.nome} que não há valores em aberto. Tom positivo.`,
+      { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem valores em aberto. 😊`);
     return;
   }
 
-  if (estado === 'flow3_digitos') {
-    const digitos = (body || '').replace(/\D/g, '').slice(-4);
-    if (digitos.length !== 4) {
-      await send(phone, 'Peça somente os 4 últimos dígitos do telefone.', { estado },
-        'Digite somente os 4 últimos dígitos do telefone.');
-      return;
+  let total = 0;
+  const itens = pedidos.map(p => {
+    const trav = p.total_travessia_brl || 0;
+    const com  = p.total_comissao_brl  || 0;
+    const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
+    let linha  = `Pedido #${String(p.id).padStart(3,'0')} — ${desc}`;
+    if (p.status === 'aguardando_pgto_travessia' && trav > 0) {
+      const qtd = (p.produtos||[]).reduce((s,pr) => s + (Number(pr.quantidade)||0), 0);
+      linha += ` | Travessia: ${fmtCur(trav)} (${qtd}x ${fmtCur(trav/Math.max(qtd,1))})`;
+      total += trav;
     }
-    const cliente = await findClienteByCpfDigitos(dados.cpf, digitos);
-    if (!cliente) {
-      await send(phone, 'Informe que os dados não foram encontrados.', { estado },
-        'CPF ou telefone não encontrado. Verifique e tente novamente.');
-      await setConversa(phone, { estado: 'flow3_cpf', dados: {} });
-      return;
+    if (p.status === 'aguardando_pgto_comissao' && com > 0) {
+      linha += ` | Comissão: ${fmtCur(com)}`; total += com;
     }
-    const pedidos = await getPedidosPendentes(cliente.id);
-    if (!pedidos.length) {
-      await send(phone, `Informe a ${cliente.nome} que não há valores em aberto. Use um tom positivo.`,
-        { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Sem valores em aberto. 😊`);
-      await clearConversa(phone);
-      return;
-    }
-    let total = 0;
-    const itens = pedidos.map(p => {
-      const trav = p.total_travessia_brl || 0;
-      const com  = p.total_comissao_brl  || 0;
-      const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
-      let linha  = `Pedido #${String(p.id).padStart(3,'0')} — ${desc}`;
-      if (p.status === 'aguardando_pgto_travessia' && trav > 0) {
-        const qtd = (p.produtos||[]).reduce((s,pr) => s + (Number(pr.quantidade)||0), 0);
-        linha += ` | Travessia: ${fmtCur(trav)} (${qtd}x ${fmtCur(trav/Math.max(qtd,1))})`;
-        total += trav;
-      }
-      if (p.status === 'aguardando_pgto_comissao' && com > 0) {
-        linha += ` | Comissão: ${fmtCur(com)}`; total += com;
-      }
-      return linha;
-    }).join('\n');
+    return linha;
+  }).join('\n');
 
-    const ctx = {
-      clienteNome: cliente.nome,
-      extra: `Valores em aberto:\n${itens}\nTotal: ${fmtCur(total)}`,
-    };
-    await send(phone,
-      `Apresente os valores em aberto de ${cliente.nome} de forma clara, incluindo o total. Mencione que pode pagar pelo fluxo 4.`,
-      ctx, `💰 Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}`, 400);
-    await clearConversa(phone);
-  }
+  const ctx = {
+    clienteNome: cliente.nome,
+    extra: `Valores em aberto:\n${itens}\nTotal: ${fmtCur(total)}\nLink portal: ${link}`,
+  };
+  await send(phone,
+    `Apresente os valores em aberto de ${cliente.nome} de forma clara com total. Inclua link do portal e mencione que pode pagar pelo fluxo 4.`,
+    ctx, `💰 Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}\n\n🔗 Ver no portal: ${link}`, 400);
 }
 
 // ── flow 4: avisar pagamento ──────────────────────────────────────────────────
@@ -294,7 +241,7 @@ async function iniciarFlow4(phone) {
   await setConversa(phone, { estado: 'flow4_comprovante', dados: {} });
 }
 
-async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
+async function handleFlow4(phone, estado, body, mediaUrl) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
 
@@ -324,7 +271,8 @@ async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
     const clienteNome = dados.cliente_nome || phone;
     await clearConversa(phone);
     await sendText(phone, '📦 Etiqueta recebida! Em breve sua encomenda será despachada.', true);
-    await sendText(OPERATOR_PHONE, `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
+    await sendText(OPERATOR_PHONE,
+      `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
   }
 }
 
@@ -345,8 +293,6 @@ async function handleOperadorResposta(body) {
   await resolverPendente(pendente.id, confirmado);
 
   if (confirmado) {
-    // Só confirma o pagamento — a solicitação de etiqueta acontece automaticamente
-    // quando o admin mudar o status do pedido para 'aguardando_etiqueta' no sistema
     await sendText(pendente.cliente_numero,
       '✅ Pagamento confirmado! Em breve você receberá as próximas instruções.', true);
   } else {
@@ -369,11 +315,11 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
     return;
   }
 
-  // ── Verifica se o número está cadastrado no sistema ────────────────────────
+  // Verifica se o número está cadastrado no sistema
   const clienteCadastrado = await findClienteByWhatsapp(normalPhone);
   if (!clienteCadastrado) {
     logger.info(`[menu] Número não cadastrado ignorado: ${normalPhone}`);
-    return; // silencioso — não responde para desconhecidos
+    return;
   }
 
   // Timeout — reinicia o fluxo
@@ -385,8 +331,8 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
     await clearConversa(normalPhone);
   }
 
-  const conv2  = await getConversa(normalPhone) || { estado: 'idle', dados: {} };
-  const estado = conv2.estado || 'idle';
+  const conv2    = await getConversa(normalPhone) || { estado: 'idle', dados: {} };
+  const estado   = conv2.estado || 'idle';
   const bodyNorm = (body || '').trim();
 
   // Comando global "menu"
@@ -397,24 +343,15 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
 
   // Fluxos ativos
   if (estado.startsWith('flow1_')) { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
-  if (estado.startsWith('flow2_')) { await handleFlow2(normalPhone, estado, bodyNorm); return; }
-  if (estado.startsWith('flow3_')) { await handleFlow3(normalPhone, estado, bodyNorm); return; }
+  if (estado === 'flow2_selecao')  { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
   if (estado.startsWith('flow4_')) { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
 
-  // Estado idle/menu — interpreta seleção ou texto livre
+  // Estado idle/menu — interpreta seleção numérica
   if (/^[1-5]$/.test(bodyNorm)) {
     switch (bodyNorm) {
       case '1': await iniciarFlow1(normalPhone); return;
-      case '2':
-        await setConversa(normalPhone, { estado: 'flow2_cpf', dados: {} });
-        await send(normalPhone, 'Peça o CPF do cliente (somente números).', { estado: 'flow2_cpf' },
-          'Digite seu CPF (somente números).');
-        return;
-      case '3':
-        await setConversa(normalPhone, { estado: 'flow3_cpf', dados: {} });
-        await send(normalPhone, 'Peça o CPF do cliente (somente números).', { estado: 'flow3_cpf' },
-          'Digite seu CPF (somente números).');
-        return;
+      case '2': await iniciarFlow2(normalPhone, clienteCadastrado); return;
+      case '3': await iniciarFlow3(normalPhone, clienteCadastrado); return;
       case '4': await iniciarFlow4(normalPhone); return;
       case '5':
         await send(normalPhone, 'Informe que vai chamar o operador e peça para aguardar.', {},
@@ -432,7 +369,6 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
       await handleMessage(normalPhone, 'text', String(intencao), null, null);
       return;
     }
-    // Claude responde a perguntas fora do script
     const respostaLivre = await responder(
       { estado, extra: 'O cliente enviou uma mensagem fora dos fluxos esperados.' },
       bodyNorm, 250
@@ -443,7 +379,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
     }
   }
 
-  // Fallback: mostra menu
+  // Fallback
   await showMenu(normalPhone, clienteCadastrado.nome);
 }
 
