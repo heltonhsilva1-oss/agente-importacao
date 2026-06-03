@@ -107,26 +107,31 @@ function setupListeners() {
 
         if (change.type === 'added') {
           if (!pedidosCarregados) {
-            // Carga inicial — só popula o cache
             statusCache.set(id, pedido.status);
             return;
           }
-          // Novo pedido cadastrado após o servidor estar rodando
+          // Novo pedido detectado após carga inicial
           statusCache.set(id, pedido.status);
+          logger.info(`[notif] Novo pedido detectado: #${pedido.id} status=${pedido.status} cliente_id=${pedido.cliente_id}`);
+
           if (pedido.status === 'nota_recebida') {
             try {
               const cliente = await getClienteById(pedido.cliente_id);
-              if (cliente) {
-                const phone = clienteToWhatsapp(cliente);
-                if (phone) {
-                  const portal = `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`;
-                  await sendText(phone,
-                    `Olá ${cliente.nome}! ✅ Recebemos sua nota fiscal.\n\n` +
-                    `Em breve vamos retirar seu pedido no Paraguai. 🇵🇾\n\n` +
-                    `🔗 Acompanhe pelo portal: ${portal}`, true);
-                  logger.info(`[notif] Nota recebida notificada → ${cliente.nome}`);
-                }
+              if (!cliente) {
+                logger.warn(`[notif] Cliente ${pedido.cliente_id} não encontrado para pedido #${pedido.id}`);
+                return;
               }
+              const phone = clienteToWhatsapp(cliente);
+              if (!phone) {
+                logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`);
+                return;
+              }
+              const portal = `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`;
+              await sendText(phone,
+                `Olá ${cliente.nome}! ✅ Recebemos sua nota fiscal.\n\n` +
+                `Em breve vamos retirar seu pedido no Paraguai. 🇵🇾\n\n` +
+                `🔗 Acompanhe pelo portal: ${portal}`, true);
+              logger.info(`[notif] ✅ Nota recebida notificada → ${cliente.nome} (${phone})`);
             } catch (err) {
               logger.error('[notif] Erro ao notificar nota recebida:', err.message);
             }
