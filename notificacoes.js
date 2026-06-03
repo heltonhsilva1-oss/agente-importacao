@@ -41,7 +41,7 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
     aguardando_pgto_travessia:
       `Olá ${nome}! Sua mercadoria está pronta para embarcar.\n` +
       `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
-      `💳 Avise o pagamento respondendo aqui mesmo.\n🔗 Ver detalhes: ${portal}`,
+      `💳 Após pagar, é só enviar o comprovante aqui nessa conversa.\n🔗 Ver detalhes: ${portal}`,
     em_transito:
       `Olá ${nome}! Sua mercadoria está a caminho de São Paulo. 🚚\n\n` +
       `🔗 Acompanhe no portal: ${portal}`,
@@ -55,7 +55,7 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
-      `⏰ Pague hoje para garantir o envio. Avise aqui no WhatsApp.\n🔗 Ver detalhes: ${portal}`,
+      `⏰ Pague hoje para garantir o envio.\n💳 Após pagar, é só enviar o comprovante aqui nessa conversa.\n🔗 Ver detalhes: ${portal}`,
     aguardando_etiqueta:
       `Olá ${nome}! Pagamento confirmado. ✅\n\n` +
       `🔗 Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
@@ -146,7 +146,15 @@ function setupListeners() {
             await sendText(phone, msg, true);
             logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${pedido.status}`);
 
-            // Quando status = aguardando_etiqueta, coloca cliente no fluxo de envio de etiqueta
+            // Coloca cliente no estado correto para responder diretamente sem navegar no menu
+            if (pedido.status === 'aguardando_pgto_travessia' || pedido.status === 'aguardando_pgto_comissao') {
+              await setConversa(phone, {
+                estado: 'flow4_comprovante',
+                dados:  { cliente_nome: cliente.nome },
+              });
+              logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de comprovante`);
+            }
+
             if (pedido.status === 'aguardando_etiqueta') {
               await setConversa(phone, {
                 estado: 'flow4_etiqueta',
