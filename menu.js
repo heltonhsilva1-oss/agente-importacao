@@ -122,10 +122,9 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
     await clearConversa(phone);
     await send(phone, 'Confirme que a nota foi recebida e diga que em breve será cadastrada.', {},
       '✅ Nota recebida! Em breve será cadastrada no sistema.');
-    // Encaminha ao operador
+    // Notifica operador por texto (a imagem fica na conversa do agente)
     await sendText(OPERATOR_PHONE,
-      `📸 Nova nota fiscal!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
-    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
+      `📸 Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
   }
 }
 
@@ -313,8 +312,7 @@ async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
     const pendenteId = await addPendentePagamento(phone, clienteNome);
     await updateConversa(OPERATOR_PHONE, { dados: { pendente_id: pendenteId, pendente_cliente_phone: phone } });
     await sendText(OPERATOR_PHONE,
-      `💳 Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nResponda OK para confirmar ou NÃO para recusar.`, true);
-    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
+      `💳 Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nComprovante enviado na conversa do agente.\nResponda OK para confirmar ou NÃO para recusar.`, true);
     return;
   }
 
@@ -328,8 +326,7 @@ async function handleFlow4(phone, estado, body, mediaUrl, mimeType) {
     await clearConversa(phone);
     await send(phone, 'Confirme que a etiqueta foi recebida e diga que a encomenda será despachada em breve.', {},
       '📦 Etiqueta recebida! Em breve sua encomenda será despachada.');
-    await sendText(OPERATOR_PHONE, `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}`, true);
-    await sendMedia(OPERATOR_PHONE, mediaUrl, mimeType || 'image/jpeg', '', true);
+    await sendText(OPERATOR_PHONE, `🏷️ Etiqueta recebida!\nCliente: ${phone} — ${clienteNome}\nEtiqueta enviada na conversa do agente.`, true);
   }
 }
 
