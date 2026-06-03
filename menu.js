@@ -77,7 +77,7 @@ async function showMenu(phone, clienteNome = '') {
     ? `Cumprimente ${clienteNome} e apresente as 5 opções do menu de atendimento de forma amigável.`
     : 'Dê as boas-vindas e apresente as 5 opções do menu de atendimento de forma amigável.';
   const fallback =
-    `Olá! Bem-vindo à *Minha Importação*. 👋\n\n` +
+    `Olá! Bem-vindo à *Kidex Importações*. 👋\n\n` +
     `1️⃣ Enviar nota fiscal\n2️⃣ Ver status do pedido\n` +
     `3️⃣ Ver o que devo\n4️⃣ Avisar que paguei\n5️⃣ Falar com o operador\n\n` +
     `Digite o número da opção.`;
@@ -371,7 +371,7 @@ async function handleOperadorResposta(body) {
       if (!digits || digits.length < 10) continue;
       const tel = digits.startsWith('55') ? digits : `55${digits}`;
       try {
-        await sendText(tel, `📢 *Minha Importação*\n\n${mensagem}`, true);
+        await sendText(tel, `📢 *Kidex Importações*\n\n${mensagem}`, true);
         enviados++;
         await new Promise(r => setTimeout(r, 500)); // delay anti-spam
       } catch (_) {}

@@ -203,7 +203,7 @@ function setupListeners() {
             await new Promise((r) => setTimeout(r, 3000)); // delay anti-flood
 
             const msg =
-              `👋 Olá ${cliente.nome}, seja bem-vindo(a) à *Minha Importação*!\n\n` +
+              `👋 Olá ${cliente.nome}, seja bem-vindo(a) à *Kidex Importações*!\n\n` +
               `Estou aqui para te ajudar com seus pedidos.\n` +
               `Sempre que precisar, é só me chamar aqui no WhatsApp. 😊\n\n` +
               `Digite *Menu* para ver as opções disponíveis.`;
@@ -241,7 +241,7 @@ function setupListeners() {
 
           logger.info(`[notif] Nova viagem ${id} — notificando todos os clientes`);
           const msg =
-            `🇵🇾 *Minha Importação*\n\n` +
+            `🇵🇾 *Kidex Importações*\n\n` +
             `Iniciamos uma nova viagem! Aguardamos sua nota fiscal para retirar seu pedido no Paraguai.\n\n` +
             `Envie sua nota pelo WhatsApp ou acesse o portal para mais informações.`;
           await notificarTodosClientes(msg);

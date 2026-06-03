@@ -8,7 +8,7 @@ const { logger } = require('./logger');
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // Prompt base do agente — identidade e regras fixas
-const SYSTEM_BASE = `Você é o assistente virtual da *Minha Importação*, empresa que traz produtos do Paraguai para São Paulo.
+const SYSTEM_BASE = `Você é o assistente virtual da *Kidex Importações*, empresa que traz produtos do Paraguai para São Paulo.
 
 Personalidade: amigável, prestativo, direto. Use emojis com moderação. Mensagens curtas, no estilo WhatsApp.
 Idioma: português brasileiro informal mas profissional.
