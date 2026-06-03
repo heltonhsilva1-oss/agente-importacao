@@ -106,8 +106,31 @@ function setupListeners() {
         }
 
         if (change.type === 'added') {
-          // Na carga inicial só popula o cache, sem notificar
+          if (!pedidosCarregados) {
+            // Carga inicial — só popula o cache
+            statusCache.set(id, pedido.status);
+            return;
+          }
+          // Novo pedido cadastrado após o servidor estar rodando
           statusCache.set(id, pedido.status);
+          if (pedido.status === 'nota_recebida') {
+            try {
+              const cliente = await getClienteById(pedido.cliente_id);
+              if (cliente) {
+                const phone = clienteToWhatsapp(cliente);
+                if (phone) {
+                  const portal = `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`;
+                  await sendText(phone,
+                    `Olá ${cliente.nome}! ✅ Recebemos sua nota fiscal.\n\n` +
+                    `Em breve vamos retirar seu pedido no Paraguai. 🇵🇾\n\n` +
+                    `🔗 Acompanhe pelo portal: ${portal}`, true);
+                  logger.info(`[notif] Nota recebida notificada → ${cliente.nome}`);
+                }
+              }
+            } catch (err) {
+              logger.error('[notif] Erro ao notificar nota recebida:', err.message);
+            }
+          }
           return;
         }
 
