@@ -225,10 +225,12 @@ async function jobAlertaPedidoParado() {
   logger.info('[agend] Alerta pedido parado');
   const db = getFirestore();
 
-  // Alerta apenas quando cliente está devendo — transporte é responsabilidade do cliente
   const limites = {
     aguardando_pgto_travessia: 5,
     aguardando_pgto_comissao:  5,
+    aguardando_etiqueta:       3,
+    em_transito:               12,
+    chegou_sp:                 3,
   };
 
   const snap = await db.collection('pedidos').get();
