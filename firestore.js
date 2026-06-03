@@ -191,6 +191,30 @@ async function marcarMensagemEnviada(id) {
   await db().collection('mensagens_agendadas').doc(id).update({ status: 'enviado' });
 }
 
+// ── histórico de conversa ─────────────────────────────────────────────────────
+
+async function appendHistorico(phone, role, content) {
+  if (!phone || !content) return;
+  try {
+    const conv = await getConversa(phone) || {};
+    const hist = (conv.historico || []).slice(-9);
+    hist.push({ role, content: String(content).slice(0, 500) });
+    await db().collection('conversas').doc(phone).set({ historico: hist }, { merge: true });
+  } catch (_) {}
+}
+
+async function getHistorico(phone) {
+  const conv = await getConversa(phone);
+  return conv?.historico || [];
+}
+
+// ── clientes (todos ativos) ───────────────────────────────────────────────────
+
+async function getClientesAtivos() {
+  const snap = await db().collection('clientes').get();
+  return snap.docs.map(d => d.data()).filter(c => c.ativo !== false);
+}
+
 module.exports = {
   getConversa,
   setConversa,
@@ -207,4 +231,7 @@ module.exports = {
   resolverPendente,
   getMensagensPendentes,
   marcarMensagemEnviada,
+  appendHistorico,
+  getHistorico,
+  getClientesAtivos,
 };

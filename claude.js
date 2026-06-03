@@ -47,6 +47,15 @@ async function responder(ctx, instrucao, maxTokens = 200) {
   }
   if (ctx.extra)       partes.push(`\n${ctx.extra}`);
 
+  // Inclui histórico recente da conversa se disponível
+  if (ctx.historico && ctx.historico.length > 0) {
+    const hist = ctx.historico
+      .slice(-6)
+      .map(h => `${h.role === 'user' ? 'Cliente' : 'Agente'}: ${h.content}`)
+      .join('\n');
+    partes.push(`\nHistórico recente:\n${hist}`);
+  }
+
   const systemPrompt = partes.join('\n');
 
   // A instrução é um comando interno para Claude — não é o que o cliente enviou.

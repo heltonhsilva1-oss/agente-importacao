@@ -7,7 +7,9 @@ const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
 const { getMensagensPendentes, marcarMensagemEnviada } = require('./firestore');
 
-const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
+const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
+const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
+const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TZ = 'America/Sao_Paulo';
 
 function fmtCur(v) {
@@ -152,18 +154,131 @@ async function jobMensagensAgendadas() {
   }
 }
 
+// ── Resumo matinal para o operador — todo dia às 8h ──────────────────────────
+async function jobResumoMatinal() {
+  logger.info('[agend] Resumo matinal');
+  const db = getFirestore();
+  const snap = await db.collection('pedidos').get();
+  const pedidos = snap.docs.map(d => d.data());
+
+  const conta = (status) => pedidos.filter(p => p.status === status).length;
+
+  const resumo = [
+    `📊 *Resumo do dia — ${new Date().toLocaleDateString('pt-BR')}*`,
+    '',
+    `💰 Ag. pgto. travessia: ${conta('aguardando_pgto_travessia')}`,
+    `💰 Ag. pgto. comissão: ${conta('aguardando_pgto_comissao')}`,
+    `🏷️ Ag. etiqueta: ${conta('aguardando_etiqueta')}`,
+    `📦 Ag. envio: ${conta('aguardando_envio')}`,
+    `🚚 Em trânsito: ${conta('em_transito')}`,
+    `📍 Chegou em SP: ${conta('chegou_sp')}`,
+    `🇵🇾 Retirado no Paraguai: ${conta('retirado_paraguai')}`,
+    `✅ Postados: ${conta('postado')}`,
+  ].join('\n');
+
+  await sendText(OPERATOR_PHONE, resumo, true);
+}
+
+// ── Confirmação de entrega — todo dia às 10h ──────────────────────────────────
+async function jobConfirmacaoEntrega() {
+  logger.info('[agend] Confirmação de entrega');
+  const db = getFirestore();
+  const { setConversa } = require('./firestore');
+
+  const snap = await db.collection('pedidos').where('status', '==', 'postado').get();
+
+  for (const doc of snap.docs) {
+    const p = doc.data();
+    if (p.entrega_confirmada) continue; // já confirmado
+
+    // Descobre quando ficou "postado"
+    const hist = (p.historico_status || []).filter(h => h.status === 'postado');
+    const ultimo = hist[hist.length - 1];
+    if (!ultimo?.data) continue;
+    const [d, m, y] = (ultimo.data).split('/');
+    if (!y) continue;
+    const dataPostado = new Date(`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`);
+    const dias = (Date.now() - dataPostado.getTime()) / (1000 * 60 * 60 * 24);
+    if (dias < 7 || dias > 30) continue; // só entre 7 e 30 dias após postado
+
+    // Busca cliente
+    const cSnap = await db.collection('clientes').where('id', '==', Number(p.cliente_id)).limit(1).get();
+    if (cSnap.empty) continue;
+    const cliente = cSnap.docs[0].data();
+    const digits  = (cliente.telefone || '').replace(/\D/g, '');
+    if (!digits || digits.length < 10) continue;
+    const phone = digits.startsWith('55') ? digits : `55${digits}`;
+
+    const msg =
+      `Olá ${cliente.nome}! 😊\n` +
+      `Sua encomenda foi postada há ${Math.round(dias)} dias.\n` +
+      `Você já recebeu? Responda *SIM* ou *NÃO*.`;
+
+    await sendText(phone, msg, true);
+    await setConversa(phone, { estado: 'flow_entrega', dados: { pedido_id: p.id, cliente_nome: cliente.nome } });
+    logger.info(`[agend] Confirmação entrega → ${cliente.nome}`);
+  }
+}
+
+// ── Alerta pedido parado — todo dia às 9h ─────────────────────────────────────
+async function jobAlertaPedidoParado() {
+  logger.info('[agend] Alerta pedido parado');
+  const db = getFirestore();
+
+  // Quantos dias em cada status antes de alertar
+  const limites = {
+    aguardando_pgto_travessia: 5,
+    aguardando_pgto_comissao:  5,
+    aguardando_etiqueta:       3,
+    em_transito:               12,
+    chegou_sp:                 3,
+  };
+
+  const snap = await db.collection('pedidos').get();
+  const alertas = [];
+
+  for (const doc of snap.docs) {
+    const p = doc.data();
+    const limite = limites[p.status];
+    if (!limite) continue;
+
+    const hist = (p.historico_status || []).filter(h => h.status === p.status);
+    const ultimo = hist[hist.length - 1];
+    if (!ultimo?.data) continue;
+    const [d, m, y] = (ultimo.data).split('/');
+    if (!y) continue;
+    const dataStatus = new Date(`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`);
+    const dias = (Date.now() - dataStatus.getTime()) / (1000 * 60 * 60 * 24);
+
+    if (dias >= limite) {
+      const cSnap = await db.collection('clientes').where('id', '==', Number(p.cliente_id)).limit(1).get();
+      const nome  = cSnap.empty ? `ID ${p.cliente_id}` : cSnap.docs[0].data().nome;
+      alertas.push(`• Pedido #${p.id} — ${nome}: ${p.status} há ${Math.round(dias)} dias`);
+    }
+  }
+
+  if (alertas.length > 0) {
+    await sendText(OPERATOR_PHONE,
+      `⚠️ *Pedidos parados — verificar:*\n\n${alertas.join('\n')}`, true);
+    logger.info(`[agend] ${alertas.length} pedido(s) parado(s) alertado(s)`);
+  }
+}
+
 function setupAgendamentos() {
-  // Todo dia às 9h — lembretes de pagamento
+  // Todo dia às 8h — fila de mensagens + resumo matinal
+  cron.schedule('0 8 * * *', () => jobMensagensAgendadas().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+  cron.schedule('0 8 * * *', () => jobResumoMatinal().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+
+  // Todo dia às 9h — lembretes + aviso VIP + pedido parado
   cron.schedule('0 9 * * *', () => jobLembretes().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+  cron.schedule('0 9 * * *', () => jobAvisoVip().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+  cron.schedule('0 9 * * *', () => jobAlertaPedidoParado().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
 
   // Toda sexta às 9h — alerta de embarque
   cron.schedule('0 9 * * 5', () => jobAlertaEmbarque().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
 
-  // Todo dia às 9h — aviso VIP
-  cron.schedule('0 9 * * *', () => jobAvisoVip().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
-
-  // Todo dia às 8h — fila de mensagens
-  cron.schedule('0 8 * * *', () => jobMensagensAgendadas().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+  // Todo dia às 10h — confirmação de entrega
+  cron.schedule('0 10 * * *', () => jobConfirmacaoEntrega().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
 
   logger.info('[agend] Cron jobs registrados');
 }
