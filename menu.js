@@ -366,10 +366,17 @@ async function handleOperadorResposta(body) {
 async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   const normalPhone = normalizePhone(phone);
 
-  // Mensagens do operador
+  // Mensagens do operador — sempre processa
   if (normalPhone === OPERATOR_PHONE) {
     await handleOperadorResposta(body);
     return;
+  }
+
+  // ── Verifica se o número está cadastrado no sistema ────────────────────────
+  const clienteCadastrado = await findClienteByWhatsapp(normalPhone);
+  if (!clienteCadastrado) {
+    logger.info(`[menu] Número não cadastrado ignorado: ${normalPhone}`);
+    return; // silencioso — não responde para desconhecidos
   }
 
   // Timeout — reinicia o fluxo
@@ -387,8 +394,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
 
   // Comando global "menu"
   if (bodyNorm.toLowerCase() === 'menu') {
-    const clienteNome = conv2.dados?.cliente_nome || '';
-    await showMenu(normalPhone, clienteNome);
+    await showMenu(normalPhone, clienteCadastrado.nome);
     return;
   }
 
@@ -441,7 +447,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   }
 
   // Fallback: mostra menu
-  await showMenu(normalPhone);
+  await showMenu(normalPhone, clienteCadastrado.nome);
 }
 
 module.exports = { handleMessage, showMenu };
