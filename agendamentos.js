@@ -225,13 +225,10 @@ async function jobAlertaPedidoParado() {
   logger.info('[agend] Alerta pedido parado');
   const db = getFirestore();
 
-  // Quantos dias em cada status antes de alertar
+  // Alerta apenas quando cliente está devendo — transporte é responsabilidade do cliente
   const limites = {
     aguardando_pgto_travessia: 5,
     aguardando_pgto_comissao:  5,
-    aguardando_etiqueta:       3,
-    em_transito:               12,
-    chegou_sp:                 3,
   };
 
   const snap = await db.collection('pedidos').get();
@@ -277,8 +274,7 @@ function setupAgendamentos() {
   // Toda sexta às 9h — alerta de embarque
   cron.schedule('0 9 * * 5', () => jobAlertaEmbarque().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
 
-  // Todo dia às 10h — confirmação de entrega
-  cron.schedule('0 10 * * *', () => jobConfirmacaoEntrega().catch((e) => logger.error('[agend]', e.message)), { timezone: TZ });
+  // Confirmação de entrega removida — transporte é responsabilidade do cliente
 
   logger.info('[agend] Cron jobs registrados');
 }

@@ -445,7 +445,6 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl); return; }
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
   if (estado.startsWith('flow4_'))        { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl); return; }
-  if (estado === 'flow_entrega')           { await handleConfirmacaoEntrega(normalPhone, bodyNorm); return; }
 
   // Estado idle/menu — seleção numérica
   if (/^[1-5]$/.test(bodyNorm)) {
