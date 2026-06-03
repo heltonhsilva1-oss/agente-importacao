@@ -79,7 +79,8 @@ async function showMenu(phone, clienteNome = '') {
   const fallback =
     `Olá! Bem-vindo à *Kidex Importações*. 👋\n\n` +
     `1️⃣ Enviar nota fiscal\n2️⃣ Ver status do pedido\n` +
-    `3️⃣ Ver o que devo\n4️⃣ Avisar que paguei\n5️⃣ Falar com o operador\n\n` +
+    `3️⃣ Ver o que devo\n4️⃣ Avisar que paguei\n` +
+    `5️⃣ Enviar etiqueta de postagem\n6️⃣ Falar com o operador\n\n` +
     `Digite o número da opção.`;
   await send(phone, instrucao, ctx, fallback, 250);
   await setConversa(phone, { estado: 'menu', dados: {} });
@@ -447,7 +448,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   if (estado.startsWith('flow4_'))        { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl); return; }
 
   // Estado idle/menu — seleção numérica
-  if (/^[1-5]$/.test(bodyNorm)) {
+  if (/^[1-6]$/.test(bodyNorm)) {
     saveUserMsg(normalPhone, bodyNorm);
     switch (bodyNorm) {
       case '1': await iniciarFlow1(normalPhone); return;
@@ -455,6 +456,10 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
       case '3': await iniciarFlow3(normalPhone, clienteCadastrado); return;
       case '4': await iniciarFlow4(normalPhone, clienteCadastrado); return;
       case '5':
+        await sendText(normalPhone, 'Por favor, envie a etiqueta de postagem.', true);
+        await setConversa(normalPhone, { estado: 'flow4_etiqueta', dados: { cliente_nome: clienteCadastrado.nome } });
+        return;
+      case '6':
         await send(normalPhone, 'Informe que vai chamar o operador e peça para aguardar.', {},
           'Vou chamar o operador. Aguarde um momento. 👋');
         await sendText(OPERATOR_PHONE, `📞 Cliente ${normalPhone} quer falar com você.`, true);

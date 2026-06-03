@@ -24,7 +24,8 @@ Fluxos disponíveis:
 2️⃣ Ver status do meu pedido
 3️⃣ Ver o que devo
 4️⃣ Avisar que paguei
-5️⃣ Falar com o operador`;
+5️⃣ Enviar etiqueta de postagem
+6️⃣ Falar com o operador`;
 
 /**
  * Gera uma resposta natural via Claude.
