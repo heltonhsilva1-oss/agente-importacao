@@ -345,13 +345,10 @@ async function handleOperadorResposta(body) {
   await resolverPendente(pendente.id, confirmado);
 
   if (confirmado) {
-    await send(pendente.cliente_numero,
-      'Informe que o pagamento foi confirmado e peça para enviar a etiqueta de postagem.',
-      {}, '✅ Pagamento confirmado! Envie a etiqueta de postagem aqui no WhatsApp.');
-    await setConversa(pendente.cliente_numero, {
-      estado: 'flow4_etiqueta',
-      dados:  { cliente_nome: pendente.cliente_nome },
-    });
+    // Só confirma o pagamento — a solicitação de etiqueta acontece automaticamente
+    // quando o admin mudar o status do pedido para 'aguardando_etiqueta' no sistema
+    await sendText(pendente.cliente_numero,
+      '✅ Pagamento confirmado! Em breve você receberá as próximas instruções.', true);
   } else {
     await send(pendente.cliente_numero,
       'Informe que não foi possível confirmar o pagamento e peça para entrar em contato com o operador.',

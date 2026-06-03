@@ -5,6 +5,7 @@
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
+const { setConversa } = require('./firestore');
 
 const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
 
@@ -112,6 +113,15 @@ function setupListeners() {
             // forceNow=true: notificações de status sempre enviam imediatamente
             await sendText(phone, msg, true);
             logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${pedido.status}`);
+
+            // Quando status = aguardando_etiqueta, coloca cliente no fluxo de envio de etiqueta
+            if (pedido.status === 'aguardando_etiqueta') {
+              await setConversa(phone, {
+                estado: 'flow4_etiqueta',
+                dados:  { cliente_nome: cliente.nome },
+              });
+              logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de etiqueta`);
+            }
           } else {
             logger.info(`[notif] Status ${pedido.status} sem mensagem configurada — ignorado`);
           }
