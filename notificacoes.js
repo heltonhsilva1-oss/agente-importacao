@@ -30,7 +30,6 @@ async function getClienteById(clienteId) {
 }
 
 function buildMensagemStatus(status, nome, trav, com, phone) {
-  const wa     = `https://wa.me/${AGENT_PHONE}`;
   const portal = phone
     ? `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`
     : PORTAL_URL;
@@ -42,7 +41,7 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
     aguardando_pgto_travessia:
       `Olá ${nome}! Sua mercadoria está pronta para embarcar.\n` +
       `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
-      `💳 Avise o pagamento: ${wa}\n🔗 Ver detalhes: ${portal}`,
+      `💳 Avise o pagamento respondendo aqui mesmo.\n🔗 Ver detalhes: ${portal}`,
     em_transito:
       `Olá ${nome}! Sua mercadoria está a caminho de São Paulo. 🚚\n\n` +
       `🔗 Acompanhe no portal: ${portal}`,
@@ -52,11 +51,11 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
-      `💳 Avise o pagamento: ${wa}\n🔗 Ver detalhes: ${portal}`,
+      `💳 Avise o pagamento respondendo aqui mesmo.\n🔗 Ver detalhes: ${portal}`,
     aguardando_etiqueta:
       `Olá ${nome}! Pagamento confirmado. ✅\n\n` +
       `🔗 Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
-      `Depois envie a etiqueta de postagem aqui: ${wa}`,
+      `Depois é só enviar a etiqueta aqui nessa conversa. 📦`,
     aguardando_envio:
       `Olá ${nome}! Sua etiqueta foi confirmada. Em breve sua encomenda será postada. 📦\n\n` +
       `🔗 Acompanhe no portal: ${portal}`,
