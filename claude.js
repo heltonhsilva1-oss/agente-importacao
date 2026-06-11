@@ -82,7 +82,7 @@ async function responder(ctx, instrucao, maxTokens = 200) {
 }
 
 /**
- * Detecta qual fluxo (1-5) o cliente quer a partir de texto livre.
+ * Detecta qual fluxo (1-6) o cliente quer a partir de texto livre.
  * Retorna 0 se não identificar.
  */
 async function detectarIntencao(texto) {
@@ -94,11 +94,12 @@ async function detectarIntencao(texto) {
       system:
         'Classifique a intenção. Responda SOMENTE com o número:\n' +
         '1=enviar nota fiscal  2=ver status do pedido  3=ver débitos/valores\n' +
-        '4=avisar pagamento realizado  5=falar com operador  0=não identificado',
+        '4=avisar pagamento realizado  5=enviar etiqueta de postagem\n' +
+        '6=falar com operador  0=não identificado',
       messages: [{ role: 'user', content: texto }],
     });
     const n = parseInt((resp.content[0]?.text || '0').trim());
-    return Number.isInteger(n) && n >= 0 && n <= 5 ? n : 0;
+    return Number.isInteger(n) && n >= 0 && n <= 6 ? n : 0;
   } catch {
     return 0;
   }

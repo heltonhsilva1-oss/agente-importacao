@@ -36,6 +36,7 @@ async function queueMensagem(phone, data) {
     ...data,
     criado_em: Timestamp.now(),
     status: 'pendente',
+    tentativas: 0,
   });
 }
 

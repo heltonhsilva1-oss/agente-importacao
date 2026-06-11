@@ -5,7 +5,12 @@ const cron = require('node-cron');
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
-const { getMensagensPendentes, marcarMensagemEnviada } = require('./firestore');
+const {
+  getMensagensProcessaveis,
+  claimScheduledMessage,
+  completeScheduledMessage,
+  failScheduledMessage,
+} = require('./firestore');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
@@ -218,13 +223,33 @@ async function jobAlertaPedidoParado() {
 async function jobMensagensAgendadas() {
   logger.info('[agend] Enviando mensagens enfileiradas');
   const { sendMedia } = require('./uazapi');
-  const mensagens = await getMensagensPendentes();
-  for (const m of mensagens) {
+  const mensagens = await getMensagensProcessaveis();
+  for (const candidate of mensagens) {
+    const m = await claimScheduledMessage(candidate.id);
+    if (!m) continue;
+
     try {
       if (m.tipo === 'text')  await sendText(m.phone, m.mensagem, true);
       if (m.tipo === 'media') await sendMedia(m.phone, m.mediaUrl, m.mimeType, m.caption || '', true);
-      await marcarMensagemEnviada(m.id);
-    } catch (err) { logger.error(`[agend] Falha mensagem ${m.id}:`, err.message); }
+      await completeScheduledMessage(m.id);
+    } catch (err) {
+      const failure = await failScheduledMessage(m.id, m.tentativas, err.message);
+      logger.error(
+        `[agend] Falha mensagem ${m.id} (${failure.attempts}/5):`,
+        err.message
+      );
+      if (failure.permanent) {
+        try {
+          await sendText(
+            OPERATOR_PHONE,
+            `Falha permanente ao enviar mensagem da fila ${m.id} para ${m.phone}. Verifique o Railway.`,
+            true
+          );
+        } catch (alertError) {
+          logger.error('[agend] Também falhou ao avisar o operador:', alertError.message);
+        }
+      }
+    }
   }
 }
 
@@ -252,4 +277,4 @@ function setupAgendamentos() {
   logger.info('[agend] Cron jobs registrados');
 }
 
-module.exports = { setupAgendamentos };
+module.exports = { setupAgendamentos, jobMensagensAgendadas };

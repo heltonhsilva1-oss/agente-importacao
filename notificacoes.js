@@ -6,6 +6,8 @@ const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
 const { setConversa } = require('./firestore');
+const { getCobrancaPendente } = require('./pagamentos');
+const { buildPortalLink } = require('./portal-access');
 
 const AGENT_PHONE  = process.env.AGENT_PHONE  || '5511961482602';
 const PORTAL_URL   = process.env.PORTAL_URL   || 'https://minhaimportacao-5442a.web.app/portal';
@@ -30,9 +32,7 @@ async function getClienteById(clienteId) {
 }
 
 function buildMensagemStatus(status, nome, trav, com, phone) {
-  const portal = phone
-    ? `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`
-    : PORTAL_URL;
+  const portal = phone ? buildPortalLink(PORTAL_URL, phone) : PORTAL_URL;
 
   const msgs = {
     retirado_paraguai:
@@ -126,7 +126,7 @@ function setupListeners() {
                 logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`);
                 return;
               }
-              const portal = `${PORTAL_URL}?tel=${phone.replace(/[^0-9]/g, '')}`;
+              const portal = buildPortalLink(PORTAL_URL, phone);
               await sendText(phone,
                 `Olá ${cliente.nome}! Recebemos sua nota fiscal.\n\n` +
                 `Em breve vamos retirar seu pedido no Paraguai.\n\n` +
@@ -176,11 +176,19 @@ function setupListeners() {
 
             // Coloca cliente no estado correto para responder diretamente sem navegar no menu
             if (pedido.status === 'aguardando_pgto_travessia' || pedido.status === 'aguardando_pgto_comissao') {
-              await setConversa(phone, {
-                estado: 'flow4_comprovante',
-                dados:  { cliente_nome: cliente.nome },
-              });
-              logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de comprovante`);
+              const cobranca = getCobrancaPendente(pedido);
+              if (cobranca) {
+                await setConversa(phone, {
+                  estado: 'flow4_comprovante',
+                  dados: {
+                    cliente_nome: cliente.nome,
+                    pedido_selecionado_id: pedido.id,
+                    pagamento_tipo: cobranca.tipo,
+                    pagamento_valor: cobranca.valor,
+                  },
+                });
+                logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de comprovante`);
+              }
             }
 
             if (pedido.status === 'aguardando_etiqueta') {

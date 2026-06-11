@@ -4,8 +4,57 @@
 
 const { getFirestore, Timestamp, FieldValue } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
+const { getCobrancaPendente, getStatusPagamento } = require('./pagamentos');
 
 const db = () => getFirestore();
+
+// ── deduplicação persistente do webhook ──────────────────────────────────────
+
+function timestampMillis(value) {
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (typeof value?.seconds === 'number') return value.seconds * 1000;
+  return 0;
+}
+
+async function claimWebhookMessage(messageKey) {
+  if (!messageKey) return true;
+  const ref = db().collection('webhook_processed').doc(messageKey);
+
+  return db().runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const data = snap.exists ? snap.data() : null;
+    const processingExpired =
+      data?.status === 'processando' &&
+      timestampMillis(data.processando_em) < Date.now() - 5 * 60 * 1000;
+
+    if (data?.status === 'concluido' || (data?.status === 'processando' && !processingExpired)) {
+      return false;
+    }
+
+    transaction.set(ref, {
+      status: 'processando',
+      processando_em: Timestamp.now(),
+      expira_em: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    }, { merge: true });
+    return true;
+  });
+}
+
+async function completeWebhookMessage(messageKey) {
+  if (!messageKey) return;
+  await db().collection('webhook_processed').doc(messageKey).set({
+    status: 'concluido',
+    concluido_em: Timestamp.now(),
+    processando_em: FieldValue.delete(),
+    expira_em: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  }, { merge: true });
+}
+
+async function releaseWebhookMessage(messageKey, error) {
+  if (!messageKey) return;
+  await db().collection('webhook_processed').doc(messageKey).delete();
+  logger.warn(`[firestore] Reserva do webhook liberada após erro: ${String(error || '')}`);
+}
 
 // ── conversas ─────────────────────────────────────────────────────────────────
 // Cada documento usa o número de telefone como ID
@@ -73,8 +122,10 @@ async function findClienteByWhatsapp(whatsappPhone) {
   const sem55 = digits.startsWith('55') ? digits.slice(2) : digits;
   const snap = await db().collection('clientes').get();
   for (const doc of snap.docs) {
-    const tel = normPhone(doc.data().telefone);
-    if (tel === sem55 || tel === digits) return doc.data();
+    const cliente = doc.data();
+    if (cliente.ativo === false) continue;
+    const tel = normPhone(cliente.telefone);
+    if (tel === sem55 || tel === digits) return cliente;
   }
   return null;
 }
@@ -106,7 +157,7 @@ async function getPedidosPendentes(clienteId) {
     .filter(
       (p) =>
         String(p.cliente_id) === String(clienteId) &&
-        ['aguardando_pgto_travessia', 'aguardando_pgto_comissao'].includes(p.status)
+        getCobrancaPendente(p)
     );
 }
 
@@ -136,6 +187,53 @@ async function updatePedidoStatus(pedidoId, novoStatus) {
   logger.info(`[firestore] Pedido ${pedidoId} → ${novoStatus}`);
 }
 
+async function confirmarPagamentoPedido(pedidoId, tipo) {
+  const snap = await db()
+    .collection('pedidos')
+    .where('id', '==', Number(pedidoId))
+    .limit(1)
+    .get();
+
+  if (snap.empty) {
+    logger.warn(`[firestore] Pedido ${pedidoId} não encontrado para confirmar pagamento`);
+    return { ok: false, motivo: 'pedido_nao_encontrado' };
+  }
+
+  const pedido = snap.docs[0].data();
+  if (getStatusPagamento(pedido, tipo) === 'pago') {
+    logger.info(`[firestore] Pedido ${pedidoId}: pagamento de ${tipo} já estava confirmado`);
+    return { ok: true, jaConfirmado: true, novoStatus: pedido.status };
+  }
+
+  const cobranca = getCobrancaPendente(pedido);
+  if (!cobranca || cobranca.tipo !== tipo) {
+    logger.warn(`[firestore] Pedido ${pedidoId} não aguarda pagamento de ${tipo}`);
+    return { ok: false, motivo: 'pagamento_nao_pendente' };
+  }
+
+  const now = new Date();
+  const entry = {
+    status: cobranca.proximoStatus,
+    data: now.toLocaleDateString('pt-BR'),
+    hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+  };
+
+  await snap.docs[0].ref.update({
+    [cobranca.campoPagamento]: 'pago',
+    status_pagamento: getStatusPagamento(
+      pedido,
+      tipo === 'travessia' ? 'comissao' : 'travessia'
+    ) === 'pago' ? 'pago' : 'pendente',
+    status: cobranca.proximoStatus,
+    historico_status: FieldValue.arrayUnion(entry),
+  });
+
+  logger.info(
+    `[firestore] Pedido ${pedidoId}: pagamento de ${tipo} confirmado → ${cobranca.proximoStatus}`
+  );
+  return { ok: true, novoStatus: cobranca.proximoStatus };
+}
+
 // ── configurações ─────────────────────────────────────────────────────────────
 
 async function getConfiguracoes() {
@@ -144,51 +242,155 @@ async function getConfiguracoes() {
 }
 
 // ── pendentes de pagamento ────────────────────────────────────────────────────
-// Rastreia qual confirmação de pagamento o operador deve responder
+// Cada documento aguardando compõe a fila de confirmação do operador.
 
-async function addPendentePagamento(clienteNumero, clienteNome) {
+async function addPendentePagamento(clienteNumero, clienteNome, pedidoId, tipo, valor) {
+  const ativos = await db()
+    .collection('pendentes_pagamento')
+    .where('status', 'in', ['aguardando', 'processando'])
+    .get();
+  const duplicado = ativos.docs.find((doc) => {
+    const data = doc.data();
+    return Number(data.pedido_id) === Number(pedidoId) && data.tipo === tipo;
+  });
+  if (duplicado) return { id: duplicado.id, criado: false };
+
   const ref = await db().collection('pendentes_pagamento').add({
     cliente_numero: clienteNumero,
     cliente_nome: clienteNome,
+    pedido_id: Number(pedidoId),
+    tipo,
+    valor: Number(valor) || 0,
     status: 'aguardando',
     criado_em: Timestamp.now(),
   });
-  return ref.id;
+  return { id: ref.id, criado: true };
 }
 
-// Recupera o pendente atual a partir da conversa do operador
-async function getPendenteAtual(operadorPhone) {
-  const conv = await getConversa(operadorPhone);
-  const id = conv?.dados?.pendente_id;
-  if (!id) return null;
+async function getPendentesPagamento() {
+  const snap = await db()
+    .collection('pendentes_pagamento')
+    .where('status', 'in', ['aguardando', 'processando'])
+    .get();
 
-  const snap = await db().collection('pendentes_pagamento').doc(id).get();
-  if (!snap.exists) return null;
-  const data = snap.data();
-  if (data.status !== 'aguardando') return null;
-  return { id: snap.id, ...data };
+  const limiteProcessamento = Date.now() - 5 * 60 * 1000;
+  return snap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((p) =>
+      p.status === 'aguardando' ||
+      (p.status === 'processando' && timestampMillis(p.processando_em) < limiteProcessamento)
+    )
+    .sort((a, b) => timestampMillis(a.criado_em) - timestampMillis(b.criado_em));
 }
 
-async function resolverPendente(id, confirmado) {
+async function reservarPendente(id) {
+  const ref = db().collection('pendentes_pagamento').doc(id);
+  return db().runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists) return null;
+
+    const data = snap.data();
+    const processamentoExpirado =
+      data.status === 'processando' &&
+      timestampMillis(data.processando_em) < Date.now() - 5 * 60 * 1000;
+    if (data.status !== 'aguardando' && !processamentoExpirado) return null;
+
+    transaction.update(ref, {
+      status: 'processando',
+      processando_em: Timestamp.now(),
+    });
+    return { id: snap.id, ...data };
+  });
+}
+
+async function finalizarPendente(id, status, erro = null) {
+  const dados = {
+    status,
+    resolvido_em: Timestamp.now(),
+    processando_em: FieldValue.delete(),
+  };
+  if (erro) dados.erro = String(erro).slice(0, 500);
+
   await db()
     .collection('pendentes_pagamento')
     .doc(id)
-    .update({ status: confirmado ? 'confirmado' : 'recusado', resolvido_em: Timestamp.now() });
+    .update(dados);
+}
+
+async function devolverPendenteFila(id, erro) {
+  await db()
+    .collection('pendentes_pagamento')
+    .doc(id)
+    .update({
+      status: 'aguardando',
+      processando_em: FieldValue.delete(),
+      ultimo_erro: String(erro || 'Falha ao processar').slice(0, 500),
+    });
 }
 
 // ── mensagens agendadas ───────────────────────────────────────────────────────
 
-async function getMensagensPendentes() {
+async function getMensagensProcessaveis() {
   const snap = await db()
     .collection('mensagens_agendadas')
-    .where('status', '==', 'pendente')
-    .orderBy('criado_em', 'asc')
+    .where('status', 'in', ['pendente', 'processando'])
     .get();
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  const processingLimit = Date.now() - 15 * 60 * 1000;
+  return snap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((message) =>
+      message.status === 'pendente' ||
+      (message.status === 'processando' &&
+        timestampMillis(message.processando_em) < processingLimit)
+    )
+    .sort((a, b) => timestampMillis(a.criado_em) - timestampMillis(b.criado_em));
 }
 
-async function marcarMensagemEnviada(id) {
-  await db().collection('mensagens_agendadas').doc(id).update({ status: 'enviado' });
+async function claimScheduledMessage(id) {
+  const ref = db().collection('mensagens_agendadas').doc(id);
+  return db().runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists) return null;
+
+    const data = snap.data();
+    const processingExpired =
+      data.status === 'processando' &&
+      timestampMillis(data.processando_em) < Date.now() - 15 * 60 * 1000;
+    if (data.status !== 'pendente' && !processingExpired) return null;
+
+    transaction.update(ref, {
+      status: 'processando',
+      processando_em: Timestamp.now(),
+    });
+    return { id: snap.id, ...data };
+  });
+}
+
+async function completeScheduledMessage(id) {
+  await db().collection('mensagens_agendadas').doc(id).update({
+    status: 'enviado',
+    enviado_em: Timestamp.now(),
+    processando_em: FieldValue.delete(),
+    ultimo_erro: FieldValue.delete(),
+  });
+}
+
+function getQueueFailureState(previousAttempts, maxAttempts = 5) {
+  const attempts = Number(previousAttempts || 0) + 1;
+  return { attempts, permanent: attempts >= maxAttempts };
+}
+
+async function failScheduledMessage(id, previousAttempts, error, maxAttempts = 5) {
+  const { attempts, permanent } = getQueueFailureState(previousAttempts, maxAttempts);
+  await db().collection('mensagens_agendadas').doc(id).update({
+    status: permanent ? 'falha_permanente' : 'pendente',
+    tentativas: attempts,
+    ultimo_erro: String(error || 'Falha desconhecida').slice(0, 500),
+    ultima_tentativa_em: Timestamp.now(),
+    processando_em: FieldValue.delete(),
+  });
+  return { attempts, permanent };
 }
 
 // ── histórico de conversa ─────────────────────────────────────────────────────
@@ -216,6 +418,9 @@ async function getClientesAtivos() {
 }
 
 module.exports = {
+  claimWebhookMessage,
+  completeWebhookMessage,
+  releaseWebhookMessage,
   getConversa,
   setConversa,
   updateConversa,
@@ -225,12 +430,18 @@ module.exports = {
   getPedidosAtivos,
   getPedidosPendentes,
   updatePedidoStatus,
+  confirmarPagamentoPedido,
   getConfiguracoes,
   addPendentePagamento,
-  getPendenteAtual,
-  resolverPendente,
-  getMensagensPendentes,
-  marcarMensagemEnviada,
+  getPendentesPagamento,
+  reservarPendente,
+  finalizarPendente,
+  devolverPendenteFila,
+  getMensagensProcessaveis,
+  claimScheduledMessage,
+  completeScheduledMessage,
+  getQueueFailureState,
+  failScheduledMessage,
   appendHistorico,
   getHistorico,
   getClientesAtivos,

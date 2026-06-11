@@ -5,13 +5,16 @@
 const { logger } = require('./logger');
 const { responder, detectarIntencao } = require('./claude');
 const {
-  getConversa, setConversa, updateConversa, clearConversa,
+  getConversa, setConversa, clearConversa,
   findClienteByWhatsapp, getClientesAtivos,
   getPedidosAtivos, getPedidosPendentes,
-  addPendentePagamento, getPendenteAtual, resolverPendente,
+  addPendentePagamento, getPendentesPagamento, reservarPendente,
+  finalizarPendente, devolverPendenteFila, confirmarPagamentoPedido,
   appendHistorico, getHistorico,
 } = require('./firestore');
 const { sendText } = require('./uazapi');
+const { getCobrancaPendente } = require('./pagamentos');
+const { buildPortalLink } = require('./portal-access');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
@@ -31,7 +34,7 @@ function normalizePhone(phone) {
 }
 
 function portalLink(phone) {
-  return `${PORTAL_URL}?tel=${(phone || '').replace(/[^0-9]/g, '')}`;
+  return buildPortalLink(PORTAL_URL, phone);
 }
 
 function isTimedOut(conv) {
@@ -253,8 +256,9 @@ async function iniciarFlow4(phone, cliente) {
   if (pedidos.length > 1) {
     const lista = pedidos.map((p, i) => {
       const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
-      const val  = p.total_travessia_brl || p.total_comissao_brl || 0;
-      return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} (${fmtCur(val)})`;
+      const cobranca = getCobrancaPendente(p);
+      const tipoLabel = cobranca?.tipo === 'travessia' ? 'Travessia' : 'Comissão';
+      return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} | ${tipoLabel}: ${fmtCur(cobranca?.valor)}`;
     }).join('\n');
 
     await send(phone,
@@ -264,14 +268,35 @@ async function iniciarFlow4(phone, cliente) {
 
     await setConversa(phone, {
       estado: 'flow4_selecao_pedido',
-      dados:  { cliente_id: cliente.id, cliente_nome: cliente.nome, pedidos_ids: pedidos.map(p => p.id) },
+      dados:  {
+        cliente_id: cliente.id,
+        cliente_nome: cliente.nome,
+        pedidos: pedidos.map(p => {
+          const cobranca = getCobrancaPendente(p);
+          return { id: p.id, tipo: cobranca?.tipo, valor: cobranca?.valor };
+        }),
+      },
     });
     return;
   }
 
-  // Só um pedido pendente ou nenhum — vai direto para comprovante
+  if (!pedidos.length) {
+    await send(phone, `Informe ${cliente.nome} que não há pagamentos pendentes.`,
+      { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Não há pagamentos pendentes no momento.`);
+    return;
+  }
+
+  const cobranca = getCobrancaPendente(pedidos[0]);
   await sendText(phone, 'Por favor, envie o comprovante de pagamento.', true);
-  await setConversa(phone, { estado: 'flow4_comprovante', dados: { cliente_nome: cliente.nome } });
+  await setConversa(phone, {
+    estado: 'flow4_comprovante',
+    dados: {
+      cliente_nome: cliente.nome,
+      pedido_selecionado_id: pedidos[0].id,
+      pagamento_tipo: cobranca.tipo,
+      pagamento_valor: cobranca.valor,
+    },
+  });
 }
 
 async function handleFlow4(phone, estado, body, mediaUrl) {
@@ -281,12 +306,15 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
 
   if (estado === 'flow4_selecao_pedido') {
     const idx = parseInt(body) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= (dados.pedidos_ids || []).length) {
+    if (isNaN(idx) || idx < 0 || idx >= (dados.pedidos || []).length) {
       await send(phone, 'Opção inválida, peça para digitar o número correto.', {},
         'Opção inválida. Digite o número do pedido.');
       return;
     }
-    dados.pedido_selecionado_id = dados.pedidos_ids[idx];
+    const selecionado = dados.pedidos[idx];
+    dados.pedido_selecionado_id = selecionado.id;
+    dados.pagamento_tipo = selecionado.tipo;
+    dados.pagamento_valor = selecionado.valor;
     await sendText(phone, 'Por favor, envie o comprovante de pagamento.', true);
     await setConversa(phone, { estado: 'flow4_comprovante', dados });
     return;
@@ -299,13 +327,31 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
       return;
     }
     const clienteNome = dados.cliente_nome || phone;
+    if (!dados.pedido_selecionado_id || !dados.pagamento_tipo) {
+      await clearConversa(phone);
+      await sendText(phone,
+        'Não consegui identificar o pagamento. Digite MENU e tente novamente.', true);
+      return;
+    }
     await clearConversa(phone);
     await sendText(phone, 'Comprovante recebido! Aguarde a confirmação do operador.', true);
     appendHistorico(phone, 'assistant', 'Comprovante recebido! Aguarde a confirmação do operador.');
-    const pendenteId = await addPendentePagamento(phone, clienteNome);
-    await updateConversa(OPERATOR_PHONE, { dados: { pendente_id: pendenteId, pendente_cliente_phone: phone } });
-    await sendText(OPERATOR_PHONE,
-      `Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\nComprovante enviado na conversa do agente.\nResponda OK para confirmar ou NÃO para recusar.`, true);
+    const inclusao = await addPendentePagamento(
+      phone,
+      clienteNome,
+      dados.pedido_selecionado_id,
+      dados.pagamento_tipo,
+      dados.pagamento_valor
+    );
+    const fila = await getPendentesPagamento();
+    if (inclusao.criado) {
+      await sendText(OPERATOR_PHONE,
+        `Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\n` +
+        `Pedido #${dados.pedido_selecionado_id} — ${dados.pagamento_tipo === 'travessia' ? 'Travessia' : 'Comissão'}: ${fmtCur(dados.pagamento_valor)}\n` +
+        `Comprovante enviado na conversa do agente.\n\n` +
+        `Fila atual: ${fila.length} pagamento(s).\n` +
+        `Responda OK para confirmar o primeiro, NÃO para recusar ou FILA para ver a lista.`, true);
+    }
     return;
   }
 
@@ -355,14 +401,40 @@ async function handleConfirmacaoEntrega(phone, body) {
   await clearConversa(phone);
 }
 
-// ── operador: OK / NÃO / BROADCAST ───────────────────────────────────────────
+// ── operador: fila de pagamentos / broadcast ─────────────────────────────────
+
+function parseComandoFila(body) {
+  const normalizado = (body || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  if (normalizado === 'FILA' || normalizado === 'PENDENTES') {
+    return { acao: 'listar', posicao: null };
+  }
+
+  const match = normalizado.match(/^(OK|NAO)(?:\s+(\d+))?$/);
+  if (!match) return null;
+  return {
+    acao: match[1] === 'OK' ? 'confirmar' : 'recusar',
+    posicao: match[2] ? Number(match[2]) : 1,
+  };
+}
+
+function formatarFila(pendentes) {
+  if (!pendentes.length) return 'Nenhum pagamento pendente de confirmação.';
+
+  const itens = pendentes.map((p, index) =>
+    `${index + 1}. Pedido #${p.pedido_id} — ${p.cliente_nome || p.cliente_numero}\n` +
+    `   ${p.tipo === 'travessia' ? 'Travessia' : 'Comissão'}: ${fmtCur(p.valor)}`
+  ).join('\n\n');
+
+  return `Pagamentos aguardando confirmação:\n\n${itens}\n\n` +
+    `Envie OK para confirmar o primeiro, NÃO para recusar o primeiro, ` +
+    `ou use OK 2 / NÃO 2 para escolher outro número.`;
+}
 
 async function handleOperadorResposta(body) {
-  const upper = (body || '').trim().toUpperCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '');
-
   // Broadcast — operador manda "AVISO: mensagem" ou "TODOS: mensagem"
-  const broadcastMatch = body.match(/^(?:AVISO|TODOS):\s*(.+)/si);
+  const broadcastMatch = (body || '').match(/^(?:AVISO|TODOS):\s*(.+)/si);
   if (broadcastMatch) {
     const mensagem = broadcastMatch[1].trim();
     const clientes = await getClientesAtivos();
@@ -381,27 +453,58 @@ async function handleOperadorResposta(body) {
     return true;
   }
 
-  // Confirmação de pagamento OK / NÃO
-  const confirmado = upper === 'OK';
-  const recusado   = upper === 'NAO' || upper === 'NÃO';
-  if (!confirmado && !recusado) return false;
+  const comando = parseComandoFila(body);
+  if (!comando) return false;
 
-  const pendente = await getPendenteAtual(OPERATOR_PHONE);
-  if (!pendente) {
-    await sendText(OPERATOR_PHONE, 'Nenhum pagamento pendente de confirmação.', true);
+  const pendentes = await getPendentesPagamento();
+  if (comando.acao === 'listar') {
+    await sendText(OPERATOR_PHONE, formatarFila(pendentes), true);
     return true;
   }
-  await resolverPendente(pendente.id, confirmado);
 
-  if (confirmado) {
-    await sendText(pendente.cliente_numero,
-      'Pagamento confirmado! Em breve você receberá as próximas instruções.', true);
-  } else {
+  const posicao = comando.posicao;
+  if (!Number.isInteger(posicao) || posicao < 1 || posicao > pendentes.length) {
+    await sendText(OPERATOR_PHONE,
+      `Não existe o item ${posicao} na fila atual.\n\n${formatarFila(pendentes)}`, true);
+    return true;
+  }
+
+  const pendente = await reservarPendente(pendentes[posicao - 1].id);
+  if (!pendente) {
+    await sendText(OPERATOR_PHONE,
+      'Esse pagamento já foi processado. Envie FILA para atualizar a lista.', true);
+    return true;
+  }
+
+  if (comando.acao === 'recusar') {
+    await finalizarPendente(pendente.id, 'recusado');
     await send(pendente.cliente_numero,
       'Informe que não foi possível confirmar o pagamento e peça para entrar em contato.',
-      {}, 'Pagamento nao confirmado. Entre em contato com o operador.');
+      {}, 'Pagamento não confirmado. Entre em contato com o operador.');
+    await sendText(OPERATOR_PHONE,
+      `Pagamento do pedido #${pendente.pedido_id} recusado.`, true);
+    return true;
   }
-  await updateConversa(OPERATOR_PHONE, { dados: {} });
+
+  const resultado = await confirmarPagamentoPedido(pendente.pedido_id, pendente.tipo);
+  if (!resultado.ok) {
+    await devolverPendenteFila(pendente.id, resultado.motivo);
+    await sendText(OPERATOR_PHONE,
+      `Não foi possível atualizar o pedido #${pendente.pedido_id}. ` +
+      `O pagamento voltou para a fila. Verifique o status no painel.`, true);
+    return true;
+  }
+
+  await finalizarPendente(pendente.id, 'confirmado');
+  await sendText(pendente.cliente_numero,
+    pendente.tipo === 'travessia'
+      ? 'Pagamento da travessia confirmado! Sua mercadoria seguirá para São Paulo.'
+      : 'Pagamento da comissão confirmado! Agora envie a etiqueta de postagem.', true);
+
+  const restantes = await getPendentesPagamento();
+  await sendText(OPERATOR_PHONE,
+    `Pagamento do pedido #${pendente.pedido_id} confirmado. ` +
+    `Restam ${restantes.length} pagamento(s) na fila.`, true);
   return true;
 }
 
@@ -473,7 +576,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   saveUserMsg(normalPhone, bodyNorm);
   if (bodyNorm.length > 2) {
     const intencao = await detectarIntencao(bodyNorm);
-    if (intencao >= 1 && intencao <= 5) {
+    if (intencao >= 1 && intencao <= 6) {
       await handleMessage(normalPhone, 'text', String(intencao), null, null);
       return;
     }
@@ -493,4 +596,9 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   await showMenu(normalPhone, clienteCadastrado.nome);
 }
 
-module.exports = { handleMessage, showMenu };
+module.exports = {
+  handleMessage,
+  showMenu,
+  parseComandoFila,
+  formatarFila,
+};

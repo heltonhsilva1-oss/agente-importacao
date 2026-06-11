@@ -1,20 +1,37 @@
 'use strict';
 // Rota Express que recebe webhooks da Uazapi
 
+const crypto = require('crypto');
 const { logger } = require('./logger');
 const { handleMessage } = require('./menu');
+const {
+  claimWebhookMessage,
+  completeWebhookMessage,
+  releaseWebhookMessage,
+} = require('./firestore');
 
 const AGENT_PHONE = process.env.AGENT_PHONE || '5511961482602';
 
-// Deduplicação: evita processar a mesma mensagem duas vezes (Uazapi envia webhook duplo)
-const processedIds = new Map();
-function isDuplicate(id) {
-  if (!id) return false;
-  if (processedIds.has(id)) return true;
-  processedIds.set(id, Date.now());
-  const cutoff = Date.now() - 30000;
-  for (const [k, v] of processedIds) if (v < cutoff) processedIds.delete(k);
-  return false;
+function messageKey(id) {
+  if (!id) return '';
+  return crypto.createHash('sha256').update(String(id)).digest('hex');
+}
+
+function getWebhookSecret() {
+  return String(process.env.WEBHOOK_PATH_SECRET || '').trim();
+}
+
+function isSecretConfigured(secret = getWebhookSecret()) {
+  return secret.length >= 32;
+}
+
+function isValidSecret(recebido, esperado = getWebhookSecret()) {
+  if (!recebido || !isSecretConfigured(esperado)) return false;
+
+  const recebidoBuffer = Buffer.from(String(recebido));
+  const esperadoBuffer = Buffer.from(String(esperado));
+  if (recebidoBuffer.length !== esperadoBuffer.length) return false;
+  return crypto.timingSafeEqual(recebidoBuffer, esperadoBuffer);
 }
 
 // Extrai phone, body, type, mediaUrl, mimeType e isFromMe do payload da Uazapi GO
@@ -68,8 +85,19 @@ function parsePayload(raw) {
 }
 
 function setupWebhook(app) {
-  app.post('/webhook', async (req, res) => {
-    res.status(200).json({ ok: true });
+  async function processarWebhook(req, res) {
+    const secret = getWebhookSecret();
+    if (!isSecretConfigured(secret)) {
+      logger.error('[webhook] WEBHOOK_PATH_SECRET ausente ou muito curto; requisição recusada');
+      res.status(503).json({ ok: false, error: 'webhook_not_configured' });
+      return;
+    }
+
+    if (!isValidSecret(req.params.secret, secret)) {
+      logger.warn('[webhook] Tentativa com segredo ausente ou inválido');
+      res.status(401).json({ ok: false, error: 'unauthorized' });
+      return;
+    }
 
     try {
       const raw    = req.body;
@@ -77,6 +105,7 @@ function setupWebhook(app) {
 
       if (!parsed) {
         logger.warn('[webhook] Formato não reconhecido');
+        res.status(200).json({ ok: true, ignored: true });
         return;
       }
 
@@ -84,28 +113,62 @@ function setupWebhook(app) {
 
       logger.info(`[webhook] phone=${phone} type=${type} fromMe=${isFromMe} body="${(body||'').slice(0,60)}"`);
 
-      if (isFromMe)                       return; // mensagem do próprio agente
-      if (!phone)                         return;
-      if ((phone+'').includes('@g.us'))   return; // grupo
+      if (isFromMe || !phone || (phone+'').includes('@g.us')) {
+        res.status(200).json({ ok: true, ignored: true });
+        return;
+      }
 
       // Anti-loop: ignora mensagens do número do agente
       const phoneDigits = (phone+'').replace(/\D/g, '');
       const agentDigits = (AGENT_PHONE+'').replace(/\D/g, '');
-      if (phoneDigits === agentDigits || phoneDigits.endsWith(agentDigits)) return;
-
-      // Deduplicação: ignora webhook duplicado da Uazapi
-      if (isDuplicate(msgId)) {
-        logger.info(`[webhook] Duplicata ignorada: ${msgId}`);
+      if (phoneDigits === agentDigits || phoneDigits.endsWith(agentDigits)) {
+        res.status(200).json({ ok: true, ignored: true });
         return;
       }
 
-      await handleMessage(phone, type, body, mediaUrl, mimeType);
+      const dedupKey = messageKey(msgId);
+      if (!(await claimWebhookMessage(dedupKey))) {
+        logger.info(`[webhook] Duplicata ignorada: ${msgId}`);
+        res.status(200).json({ ok: true, duplicate: true });
+        return;
+      }
+
+      // A Uazapi só recebe sucesso depois que a mensagem foi reservada no
+      // Firestore. O processamento continua após a confirmação HTTP.
+      res.status(200).json({ ok: true });
+
+      try {
+        await handleMessage(phone, type, body, mediaUrl, mimeType);
+        await completeWebhookMessage(dedupKey);
+      } catch (err) {
+        await releaseWebhookMessage(dedupKey, err.message);
+        throw err;
+      }
     } catch (err) {
       logger.error('[webhook] Erro:', err.message, err.stack?.slice(0, 300));
+      if (!res.headersSent) {
+        res.status(503).json({ ok: false, error: 'temporary_failure' });
+      }
     }
-  });
+  }
 
-  app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+  app.post('/webhook', (_req, res) => {
+    res.status(401).json({ ok: false, error: 'unauthorized' });
+  });
+  app.post('/webhook/:secret', processarWebhook);
+
+  app.get('/health', (_req, res) => res.json({
+    ok: true,
+    webhookProtected: isSecretConfigured(),
+    ts: new Date().toISOString(),
+  }));
 }
 
-module.exports = { setupWebhook };
+module.exports = {
+  setupWebhook,
+  getWebhookSecret,
+  isSecretConfigured,
+  isValidSecret,
+  parsePayload,
+  messageKey,
+};

@@ -18,6 +18,7 @@ if (serviceAccount) {
 const express = require('express');
 const { logger } = require('./logger');
 const { setupWebhook } = require('./webhook');
+const { setupPortal } = require('./portal');
 const { setupListeners } = require('./notificacoes');
 const { setupAgendamentos } = require('./agendamentos');
 
@@ -26,6 +27,7 @@ app.use(express.json({ limit: '10mb' }));
 
 // Rotas: webhook + health check
 setupWebhook(app);
+setupPortal(app);
 
 // Listeners Firestore em tempo real (notificações automáticas de status)
 setupListeners();
@@ -37,5 +39,5 @@ setupAgendamentos();
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   logger.info(`[server] Agente WhatsApp rodando na porta ${PORT}`);
-  logger.info(`[server] Webhook disponível em POST /webhook`);
+  logger.info(`[server] Webhook protegido disponível em POST /webhook/<segredo>`);
 });
