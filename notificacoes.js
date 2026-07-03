@@ -252,7 +252,7 @@ function setupListeners() {
               `Sempre que precisar, é só me chamar aqui no WhatsApp. 😊\n\n` +
               `Digite *Menu* para ver as opções disponíveis.`;
 
-            await sendText(phone, msg);
+            await sendText(phone, msg, true); // forceNow: boas-vindas saem sempre na hora
             logger.info(`[notif] Boas-vindas enviadas → ${cliente.nome}`);
           } catch (err) {
             logger.error('[notif] Erro ao enviar boas-vindas:', err.message);
