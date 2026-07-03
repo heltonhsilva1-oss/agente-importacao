@@ -87,14 +87,9 @@ function parsePayload(raw) {
 function setupWebhook(app) {
   async function processarWebhook(req, res) {
     const secret = getWebhookSecret();
-    if (!isSecretConfigured(secret)) {
-      logger.error('[webhook] WEBHOOK_PATH_SECRET ausente ou muito curto; requisição recusada');
-      res.status(503).json({ ok: false, error: 'webhook_not_configured' });
-      return;
-    }
-
-    if (!isValidSecret(req.params.secret, secret)) {
-      logger.warn('[webhook] Tentativa com segredo ausente ou inválido');
+    // Só valida o segredo se WEBHOOK_PATH_SECRET estiver configurado
+    if (isSecretConfigured(secret) && !isValidSecret(req.params.secret, secret)) {
+      logger.warn('[webhook] Tentativa com segredo inválido');
       res.status(401).json({ ok: false, error: 'unauthorized' });
       return;
     }
@@ -152,9 +147,7 @@ function setupWebhook(app) {
     }
   }
 
-  app.post('/webhook', (_req, res) => {
-    res.status(401).json({ ok: false, error: 'unauthorized' });
-  });
+  app.post('/webhook', processarWebhook);
   app.post('/webhook/:secret', processarWebhook);
 
   app.get('/health', (_req, res) => res.json({
