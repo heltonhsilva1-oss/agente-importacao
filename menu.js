@@ -357,6 +357,16 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
 
   if (estado === 'flow4_etiqueta') {
     if (!mediaUrl) {
+      const clienteEtiq = await findClienteByWhatsapp(phone);
+      if (clienteEtiq) {
+        const pedidosAtivos = await getPedidosAtivos(clienteEtiq.id);
+        const aindaAguardando = pedidosAtivos.some(p => p.status === 'aguardando_etiqueta');
+        if (!aindaAguardando) {
+          await clearConversa(phone);
+          await showMenu(phone, clienteEtiq.nome);
+          return;
+        }
+      }
       await send(phone, 'Lembre que precisa enviar a etiqueta de postagem.', { estado },
         'Por favor, envie a etiqueta de postagem.');
       return;
