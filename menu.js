@@ -476,6 +476,13 @@ async function handleOperadorResposta(body) {
     return true;
   }
 
+  if (!pendente.pedido_id || !Number.isFinite(Number(pendente.pedido_id))) {
+    await finalizarPendente(pendente.id, 'corrompido');
+    await sendText(OPERATOR_PHONE,
+      'Registro corrompido removido da fila (pedido_id inválido). Envie FILA para ver os demais.', true);
+    return true;
+  }
+
   if (comando.acao === 'recusar') {
     await finalizarPendente(pendente.id, 'recusado');
     await send(pendente.cliente_numero,

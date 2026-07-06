@@ -245,6 +245,10 @@ async function getConfiguracoes() {
 // Cada documento aguardando compõe a fila de confirmação do operador.
 
 async function addPendentePagamento(clienteNumero, clienteNome, pedidoId, tipo, valor) {
+  if (!pedidoId || !Number.isFinite(Number(pedidoId))) {
+    logger.error(`[firestore] addPendentePagamento: pedidoId inválido (${pedidoId}), abortando`);
+    return { id: null, criado: false };
+  }
   const ativos = await db()
     .collection('pendentes_pagamento')
     .where('status', 'in', ['aguardando', 'processando'])
