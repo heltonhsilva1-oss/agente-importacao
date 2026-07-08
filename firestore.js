@@ -115,17 +115,28 @@ async function findClienteByCpfDigitos(cpf, ultimosDigitos) {
 }
 
 // Tenta encontrar cliente pelo número WhatsApp (útil no flow 4)
+// Trata divergência do nono dígito: WhatsApp pode enviar com ou sem o 9 extra
 async function findClienteByWhatsapp(whatsappPhone) {
-  // whatsappPhone no formato 5511999999999
   const digits = normPhone(whatsappPhone);
-  // Remove o código do país 55 e tenta os últimos 11 ou 10 dígitos
   const sem55 = digits.startsWith('55') ? digits.slice(2) : digits;
+
+  // Gera variante do nono dígito para cobrir cadastros antigos/novos
+  // sem55 com 10 dígitos (DDD+8) → tenta também DDD+"9"+8 (11 dígitos)
+  // sem55 com 11 dígitos (DDD+9) → tenta também DDD+8 (10 dígitos, sem o 9)
+  let sem55Alt = null;
+  if (sem55.length === 10) {
+    sem55Alt = sem55.slice(0, 2) + '9' + sem55.slice(2); // insere 9 após DDD
+  } else if (sem55.length === 11 && sem55[2] === '9') {
+    sem55Alt = sem55.slice(0, 2) + sem55.slice(3); // remove o 9 após DDD
+  }
+
   const snap = await db().collection('clientes').get();
   for (const doc of snap.docs) {
     const cliente = doc.data();
     if (cliente.ativo === false) continue;
     const tel = normPhone(cliente.telefone);
     if (tel === sem55 || tel === digits) return cliente;
+    if (sem55Alt && (tel === sem55Alt || tel === '55' + sem55Alt)) return cliente;
   }
   return null;
 }
