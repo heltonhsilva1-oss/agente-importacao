@@ -371,6 +371,16 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
         'Por favor, envie a etiqueta de postagem.');
       return;
     }
+    const clienteEtiqMidia = await findClienteByWhatsapp(phone);
+    if (clienteEtiqMidia) {
+      const pedidosAtivos = await getPedidosAtivos(clienteEtiqMidia.id);
+      const aindaAguardando = pedidosAtivos.some(p => p.status === 'aguardando_etiqueta');
+      if (!aindaAguardando) {
+        await clearConversa(phone);
+        await showMenu(phone, clienteEtiqMidia.nome);
+        return;
+      }
+    }
     const clienteNome = dados.cliente_nome || phone;
     await clearConversa(phone);
     await sendText(phone, 'Etiqueta recebida! Em breve sua encomenda será despachada.', true);
