@@ -142,9 +142,13 @@ async function handleFlow1(phone, estado, body, mediaUrl) {
         const produtos       = resultado?.produtos ?? [];
         const extracaoStatus = !resultado ? 'erro' : produtos.length === 0 ? 'parcial' : 'ok';
 
+        // Resolve cliente pelo número WhatsApp (trata nono dígito e prefixo 55)
+        const clienteMatch = await findClienteByWhatsapp(phone);
+
         const rascunhoId = await criarRascunhoPedido({
           cliente_phone:      phone,
-          cliente_nome:       dados.nome ?? phone,
+          cliente_id:         clienteMatch?.id ?? null,
+          cliente_nome:       clienteMatch?.nome ?? dados.nome ?? phone,
           nome_loja:          dados.loja ?? '',
           nome_vendedor:      dados.vendedor ?? '',
           foto_nota_url:      mediaUrl,
