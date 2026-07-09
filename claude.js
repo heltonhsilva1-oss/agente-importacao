@@ -119,32 +119,47 @@ function sniffMediaType(buf) {
 
 /**
  * Extrai produtos de uma nota fiscal (imagem ou PDF) via Claude Vision.
- * Retorna { produtos: [{ descricao, quantidade, valor_unitario_usd }] } ou null em erro.
+ * Retorna { produtos: [...] } em sucesso, { erro: string } em formato inválido, ou null em erro inesperado.
  */
 async function extrairProdutosNota(mediaUrl) {
   try {
     const response = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
-    const buffer  = Buffer.from(await response.arrayBuffer());
-    const base64  = buffer.toString('base64');
+    const buffer    = Buffer.from(await response.arrayBuffer());
+    const rawType   = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const sniffed   = sniffMediaType(buffer);
+    const hexHeader = buffer.slice(0, 16).toString('hex').match(/../g).join(' ');
 
-    // Prefere magic bytes; cai no Content-Type como último recurso
-    const sniffed = sniffMediaType(buffer);
-    const rawType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const isPdf   = sniffed === 'application/pdf' || rawType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
+    logger.info(`[claude] nota: rawType=${rawType} sniffed=${sniffed} bytes=${buffer.length} header=[${hexHeader}]`);
+
+    // URL expirada / inválida devolve HTML
+    if (buffer[0] === 0x3C /* '<' */) {
+      logger.warn('[claude] nota: resposta é HTML — URL provavelmente expirada');
+      return { erro: 'url_expirada' };
+    }
 
     const ALLOWED_IMG = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const isPdf = sniffed === 'application/pdf'
+      || rawType.includes('pdf')
+      || mediaUrl.toLowerCase().includes('.pdf');
+
+    // Resolve o tipo de imagem: magic bytes têm prioridade sobre Content-Type
     const imgType = sniffed && ALLOWED_IMG.includes(sniffed) ? sniffed
       : ALLOWED_IMG.includes(rawType)                        ? rawType
       : rawType === 'image/jpg'                              ? 'image/jpeg'
-      : 'image/jpeg';
+      : null;
 
-    logger.info(`[claude] extrairProdutosNota: sniffed=${sniffed} rawType=${rawType} isPdf=${isPdf} imgType=${imgType} bytes=${buffer.length}`);
+    // Formato não suportado pelo Claude (ex: HEIC, BMP, TIFF)
+    if (!isPdf && !imgType) {
+      logger.warn(`[claude] nota: formato não suportado sniffed=${sniffed} rawType=${rawType}`);
+      return { erro: 'formato_nao_suportado', sniffed, rawType };
+    }
 
-    const contentBlock = isPdf
+    const base64        = buffer.toString('base64');
+    const contentBlock  = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-      : { type: 'image',    source: { type: 'base64', media_type: imgType, data: base64 } };
+      : { type: 'image',    source: { type: 'base64', media_type: imgType,            data: base64 } };
 
     const createParams = {
       model: 'claude-sonnet-4-6',
@@ -166,8 +181,7 @@ async function extrairProdutosNota(mediaUrl) {
     };
     if (isPdf) createParams.betas = ['pdfs-2024-09-25'];
 
-    const resp = await client.messages.create(createParams);
-
+    const resp  = await client.messages.create(createParams);
     const text  = (resp.content[0]?.text || '').trim();
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) return null;
