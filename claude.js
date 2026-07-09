@@ -111,20 +111,19 @@ async function detectarIntencao(texto) {
  */
 async function extrairProdutosNota(mediaUrl) {
   try {
-    const fetch = require('node-fetch');
-    const response = await fetch(mediaUrl, { timeout: 15000 });
+    const response = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     const isPdf       = contentType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
-    const buffer      = await response.buffer();
+    const buffer      = Buffer.from(await response.arrayBuffer());
     const base64      = buffer.toString('base64');
 
     const contentBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
       : { type: 'image',    source: { type: 'base64', media_type: contentType.split(';')[0] || 'image/jpeg', data: base64 } };
 
-    const resp = await client.messages.create({
+    const createParams = {
       model: 'claude-sonnet-4-6',
       max_tokens: 1000,
       messages: [{
@@ -141,7 +140,10 @@ async function extrairProdutosNota(mediaUrl) {
           },
         ],
       }],
-    });
+    };
+    if (isPdf) createParams.betas = ['pdfs-2024-09-25'];
+
+    const resp = await client.messages.create(createParams);
 
     const text  = (resp.content[0]?.text || '').trim();
     const match = text.match(/\{[\s\S]*\}/);
