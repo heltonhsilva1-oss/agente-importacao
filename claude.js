@@ -114,14 +114,20 @@ async function extrairProdutosNota(mediaUrl) {
     const response = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-    const isPdf       = contentType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
-    const buffer      = Buffer.from(await response.arrayBuffer());
-    const base64      = buffer.toString('base64');
+    const rawType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const isPdf   = rawType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
+
+    const ALLOWED_IMG = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const imgType = ALLOWED_IMG.includes(rawType) ? rawType
+      : rawType === 'image/jpg' ? 'image/jpeg'
+      : 'image/jpeg'; // fallback seguro
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const base64 = buffer.toString('base64');
 
     const contentBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-      : { type: 'image',    source: { type: 'base64', media_type: contentType.split(';')[0] || 'image/jpeg', data: base64 } };
+      : { type: 'image',    source: { type: 'base64', media_type: imgType, data: base64 } };
 
     const createParams = {
       model: 'claude-sonnet-4-6',
