@@ -168,6 +168,17 @@ async function handleFlow1(phone, estado, body, mediaUrl) {
                 ? `formato não suportado (${resultado?.sniffed || resultado?.rawType || '?'}) — cliente deve enviar JPG/PNG/PDF`
                 : 'erro na extração — revisão manual necessária';
 
+        // Avisa cliente se o formato não for suportado
+        if (erroTipo === 'formato_nao_suportado') {
+          await sendText(phone,
+            'Não conseguimos ler esse arquivo. Por favor, envie a nota em formato JPG, PNG ou PDF e tente novamente.',
+            true);
+        } else if (erroTipo === 'url_expirada') {
+          await sendText(phone,
+            'O arquivo expirou antes de ser processado. Por favor, envie a nota novamente.',
+            true);
+        }
+
         await sendText(OPERATOR_PHONE,
           `Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
           true);
