@@ -97,7 +97,7 @@ async function iniciarFlow1(phone) {
   await setConversa(phone, { estado: 'flow1_loja', dados: {} });
 }
 
-async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
+async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent = null) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
   saveUserMsg(phone, body);
@@ -137,7 +137,7 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
     appendHistorico(phone, 'assistant', 'Nota recebida! Estamos processando...');
 
     // Extrai produtos via Claude Vision (não bloqueia resposta ao cliente)
-    extrairProdutosNota(mediaUrl, mimeType).then(async resultado => {
+    extrairProdutosNota(mediaUrl, mimeType, rawContent).then(async resultado => {
       try {
         // resultado pode ser: { produtos: [...] } | { erro: 'url_expirada'|'formato_nao_suportado' } | null
         const erroTipo       = resultado?.erro ?? null;
@@ -586,7 +586,7 @@ async function handleOperadorResposta(body) {
 
 // ── roteador principal ────────────────────────────────────────────────────────
 
-async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
+async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent = null) {
   const normalPhone = normalizePhone(phone);
 
   // Mensagens do operador
@@ -623,7 +623,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   }
 
   // Fluxos ativos
-  if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
+  if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType, rawContent); return; }
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
   if (estado.startsWith('flow4_'))        { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl); return; }
 

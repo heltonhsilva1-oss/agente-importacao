@@ -113,7 +113,7 @@ function setupWebhook(app) {
         return;
       }
 
-      const { phone, body, type, mediaUrl, mimeType, isFromMe, msgId } = parsed;
+      const { phone, body, type, mediaUrl, mimeType, isFromMe, msgId, rawContent } = parsed;
 
       logger.info(`[webhook] phone=${phone} type=${type} fromMe=${isFromMe} body="${(body||'').slice(0,60)}"`);
 
@@ -142,7 +142,7 @@ function setupWebhook(app) {
       res.status(200).json({ ok: true });
 
       try {
-        await handleMessage(phone, type, body, mediaUrl, mimeType);
+        await handleMessage(phone, type, body, mediaUrl, mimeType, rawContent);
         await completeWebhookMessage(dedupKey);
       } catch (err) {
         await releaseWebhookMessage(dedupKey, err.message);

@@ -3,6 +3,7 @@
 // A máquina de estados (menu.js) controla a lógica; Claude controla a linguagem
 
 const Anthropic = require('@anthropic-ai/sdk');
+const crypto    = require('crypto');
 const { logger } = require('./logger');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -105,6 +106,28 @@ async function detectarIntencao(texto) {
   }
 }
 
+// Info string HKDF por tipo de mídia do WhatsApp
+function waKeyInfo(mimeType) {
+  const m = (mimeType || '').toLowerCase();
+  if (m.includes('pdf') || m.includes('document')) return 'WhatsApp Document Keys';
+  if (m.includes('video'))                          return 'WhatsApp Video Keys';
+  if (m.includes('audio') || m.includes('ogg') || m.includes('opus')) return 'WhatsApp Audio Keys';
+  return 'WhatsApp Image Keys';
+}
+
+// Descriptografa arquivo de mídia do WhatsApp (AES-256-CBC via HKDF-SHA256)
+function decryptWhatsAppMedia(encBuf, mediaKeyB64, mimeType) {
+  const mediaKey  = Buffer.from(mediaKeyB64, 'base64');
+  const info      = Buffer.from(waKeyInfo(mimeType), 'utf8');
+  const keys      = Buffer.from(crypto.hkdfSync('sha256', mediaKey, Buffer.alloc(0), info, 112));
+  const iv        = keys.slice(0, 16);
+  const cipherKey = keys.slice(16, 48);
+  // Remove 10-byte HMAC appended at the end before decrypting
+  const encData   = encBuf.slice(0, encBuf.length - 10);
+  const dec       = crypto.createDecipheriv('aes-256-cbc', cipherKey, iv);
+  return Buffer.concat([dec.update(encData), dec.final()]);
+}
+
 // Detecta o tipo de mídia real pelos primeiros bytes do arquivo (mais confiável que o header HTTP)
 function sniffMediaType(buf) {
   if (buf.length < 4) return null;
@@ -130,13 +153,13 @@ function sniffMediaType(buf) {
 /**
  * Extrai produtos de uma nota fiscal (imagem ou PDF) via Claude Vision.
  * Retorna { produtos: [...] } em sucesso, { erro: string } em formato inválido, ou null em erro inesperado.
- * @param {string} mediaUrl  - URL da mídia (UazAPI ou CDN do WhatsApp)
- * @param {string} [webhookMimeType] - mimetype informado pelo webhook (hint, não definitivo)
+ * @param {string} mediaUrl       - URL da mídia (UazAPI ou CDN do WhatsApp)
+ * @param {string} [webhookMimeType] - mimetype informado pelo webhook (hint)
+ * @param {object} [rawContent]   - objeto content do webhook (precisa de rawContent.mediaKey para descriptografar)
  */
-async function extrairProdutosNota(mediaUrl, webhookMimeType = null) {
+async function extrairProdutosNota(mediaUrl, webhookMimeType = null, rawContent = null) {
   try {
-    // Inclui token do UazAPI: sem ele, a URL retorna o arquivo encriptado do CDN do WhatsApp
-    const uazapiToken = process.env.UAZAPI_INSTANCE_TOKEN;
+    const uazapiToken  = process.env.UAZAPI_INSTANCE_TOKEN;
     const fetchHeaders = uazapiToken ? { token: uazapiToken } : {};
 
     const response = await fetch(mediaUrl, {
@@ -145,12 +168,24 @@ async function extrairProdutosNota(mediaUrl, webhookMimeType = null) {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
-    const buffer    = Buffer.from(await response.arrayBuffer());
+    let buffer  = Buffer.from(await response.arrayBuffer());
     const rawType   = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const sniffed   = sniffMediaType(buffer);
-    const hexHeader = buffer.slice(0, 16).toString('hex').match(/../g).join(' ');
-
     const urlDomain = (() => { try { return new URL(mediaUrl).hostname; } catch { return '?'; } })();
+
+    // Descriptografa se for CDN do WhatsApp e tiver mediaKey no payload do webhook
+    const isWACDN = urlDomain.includes('whatsapp.net') || mediaUrl.includes('.enc?');
+    if (isWACDN && rawContent?.mediaKey) {
+      try {
+        buffer = decryptWhatsAppMedia(buffer, rawContent.mediaKey, webhookMimeType);
+        logger.info(`[claude] nota: WA decrypted ok bytes=${buffer.length}`);
+      } catch (decErr) {
+        logger.error('[claude] nota: falha na descriptografia WA:', decErr.message);
+        return null;
+      }
+    }
+
+    const hexHeader = buffer.slice(0, 16).toString('hex').match(/../g).join(' ');
+    const sniffed   = sniffMediaType(buffer);
     logger.info(`[claude] nota: domain=${urlDomain} rawType=${rawType} sniffed=${sniffed} webhookMime=${webhookMimeType} bytes=${buffer.length} header=[${hexHeader}]`);
 
     // URL expirada / inválida devolve HTML
@@ -161,16 +196,14 @@ async function extrairProdutosNota(mediaUrl, webhookMimeType = null) {
 
     const ALLOWED_IMG = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     const isPdf = sniffed === 'application/pdf'
-      || rawType.includes('pdf')
-      || mediaUrl.toLowerCase().includes('.pdf');
+      || (webhookMimeType || '').includes('pdf')
+      || rawType.includes('pdf');
 
-    // Resolve o tipo de imagem: magic bytes têm prioridade sobre Content-Type
     const imgType = sniffed && ALLOWED_IMG.includes(sniffed) ? sniffed
       : ALLOWED_IMG.includes(rawType)                        ? rawType
       : rawType === 'image/jpg'                              ? 'image/jpeg'
       : null;
 
-    // Formato não suportado pelo Claude (ex: HEIC, BMP, TIFF)
     if (!isPdf && !imgType) {
       logger.warn(`[claude] nota: formato não suportado sniffed=${sniffed} rawType=${rawType}`);
       return { erro: 'formato_nao_suportado', sniffed, rawType };
