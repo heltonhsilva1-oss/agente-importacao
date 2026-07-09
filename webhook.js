@@ -56,6 +56,14 @@ function parsePayload(raw) {
     const content  = msg.content || {};
     const mediaUrl = content.URL || content.url || null;
     const mimeType = content.mimetype || content.mimeType || null;
+    const msgId    = msg.messageid || msg.id || '';
+
+    // Log completo do content quando for mídia (para diagnóstico de download)
+    if (mediaUrl) {
+      const { logger } = require('./logger');
+      logger.info(`[webhook] media content keys: ${Object.keys(content).join(', ')}`);
+      logger.info(`[webhook] media msgId=${msgId} mediaUrl=${mediaUrl}`);
+    }
 
     return {
       phone,
@@ -64,7 +72,8 @@ function parsePayload(raw) {
       mediaUrl,
       mimeType,
       isFromMe: msg.fromMe === true,
-      msgId:    msg.messageid || msg.id || '',
+      msgId,
+      rawContent: content,
     };
   }
 
