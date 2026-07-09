@@ -105,4 +105,52 @@ async function detectarIntencao(texto) {
   }
 }
 
-module.exports = { responder, detectarIntencao };
+/**
+ * Extrai produtos de uma nota fiscal (imagem ou PDF) via Claude Vision.
+ * Retorna { produtos: [{ descricao, quantidade, valor_unitario_usd }] } ou null em erro.
+ */
+async function extrairProdutosNota(mediaUrl) {
+  try {
+    const fetch = require('node-fetch');
+    const response = await fetch(mediaUrl, { timeout: 15000 });
+    if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const isPdf       = contentType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
+    const buffer      = await response.buffer();
+    const base64      = buffer.toString('base64');
+
+    const contentBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+      : { type: 'image',    source: { type: 'base64', media_type: contentType.split(';')[0] || 'image/jpeg', data: base64 } };
+
+    const resp = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          contentBlock,
+          {
+            type: 'text',
+            text:
+              'Analise esta nota fiscal e extraia a lista de produtos comprados.\n' +
+              'Retorne SOMENTE um JSON válido, sem nenhum texto antes ou depois:\n' +
+              '{"produtos":[{"descricao":"nome do produto","quantidade":1,"valor_unitario_usd":0.00}]}\n' +
+              'Se não conseguir ler um campo use null. Se não houver produtos retorne {"produtos":[]}.',
+          },
+        ],
+      }],
+    });
+
+    const text  = (resp.content[0]?.text || '').trim();
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch (err) {
+    logger.error('[claude] extrairProdutosNota erro:', err.message);
+    return null;
+  }
+}
+
+module.exports = { responder, detectarIntencao, extrairProdutosNota };

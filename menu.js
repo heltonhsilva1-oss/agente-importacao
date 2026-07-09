@@ -3,14 +3,14 @@
 // Lógica e validações: regras fixas | Respostas em texto: Claude API
 
 const { logger } = require('./logger');
-const { responder, detectarIntencao } = require('./claude');
+const { responder, detectarIntencao, extrairProdutosNota } = require('./claude');
 const {
   getConversa, setConversa, clearConversa,
   findClienteByWhatsapp, getClientesAtivos,
   getPedidosAtivos, getPedidosPendentes,
   addPendentePagamento, getPendentesPagamento, reservarPendente,
   finalizarPendente, devolverPendenteFila, confirmarPagamentoPedido,
-  appendHistorico, getHistorico,
+  appendHistorico, getHistorico, criarRascunhoPedido,
 } = require('./firestore');
 const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
@@ -133,10 +133,38 @@ async function handleFlow1(phone, estado, body, mediaUrl) {
       return;
     }
     await clearConversa(phone);
-    await sendText(phone, 'Nota recebida! Em breve será cadastrada no sistema.', true);
-    appendHistorico(phone, 'assistant', 'Nota recebida! Em breve será cadastrada no sistema.');
-    await sendText(OPERATOR_PHONE,
-      `Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}`, true);
+    await sendText(phone, 'Nota recebida! Estamos processando...', true);
+    appendHistorico(phone, 'assistant', 'Nota recebida! Estamos processando...');
+
+    // Extrai produtos via Claude Vision (não bloqueia resposta ao cliente)
+    extrairProdutosNota(mediaUrl).then(async resultado => {
+      try {
+        const produtos       = resultado?.produtos ?? [];
+        const extracaoStatus = !resultado ? 'erro' : produtos.length === 0 ? 'parcial' : 'ok';
+
+        const rascunhoId = await criarRascunhoPedido({
+          cliente_phone:      phone,
+          cliente_nome:       dados.nome ?? phone,
+          nome_loja:          dados.loja ?? '',
+          nome_vendedor:      dados.vendedor ?? '',
+          foto_nota_url:      mediaUrl,
+          produtos,
+          extracao_status:    extracaoStatus,
+        });
+
+        const prodMsg = extracaoStatus === 'ok'
+          ? `${produtos.length} produto(s) extraído(s)`
+          : extracaoStatus === 'parcial'
+            ? 'nenhum produto identificado — revisão manual necessária'
+            : 'erro na extração — revisão manual necessária';
+
+        await sendText(OPERATOR_PHONE,
+          `Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
+          true);
+      } catch (err) {
+        logger.error('[menu] flow1_arquivo pos-extracao erro:', err.message);
+      }
+    });
   }
 }
 

@@ -432,6 +432,19 @@ async function getClientesAtivos() {
   return snap.docs.map(d => d.data()).filter(c => c.ativo !== false);
 }
 
+async function criarRascunhoPedido(dados) {
+  const ref = await db().collection('rascunhos_pedidos').add({
+    ...dados,
+    status: 'pendente',
+    criado_em: Timestamp.now(),
+  });
+  return ref.id;
+}
+
+async function atualizarRascunho(docId, dados) {
+  await db().collection('rascunhos_pedidos').doc(docId).update(dados);
+}
+
 module.exports = {
   claimWebhookMessage,
   completeWebhookMessage,
@@ -460,4 +473,6 @@ module.exports = {
   appendHistorico,
   getHistorico,
   getClientesAtivos,
+  criarRascunhoPedido,
+  atualizarRascunho,
 };
