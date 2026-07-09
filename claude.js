@@ -105,6 +105,18 @@ async function detectarIntencao(texto) {
   }
 }
 
+// Detecta o tipo de mídia real pelos primeiros bytes do arquivo (mais confiável que o header HTTP)
+function sniffMediaType(buf) {
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  // WebP: cabeçalho RIFF????WEBP
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp';
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return 'application/pdf';
+  return null;
+}
+
 /**
  * Extrai produtos de uma nota fiscal (imagem ou PDF) via Claude Vision.
  * Retorna { produtos: [{ descricao, quantidade, valor_unitario_usd }] } ou null em erro.
@@ -114,16 +126,21 @@ async function extrairProdutosNota(mediaUrl) {
     const response = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
+    const buffer  = Buffer.from(await response.arrayBuffer());
+    const base64  = buffer.toString('base64');
+
+    // Prefere magic bytes; cai no Content-Type como último recurso
+    const sniffed = sniffMediaType(buffer);
     const rawType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const isPdf   = rawType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
+    const isPdf   = sniffed === 'application/pdf' || rawType.includes('pdf') || mediaUrl.toLowerCase().includes('.pdf');
 
     const ALLOWED_IMG = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    const imgType = ALLOWED_IMG.includes(rawType) ? rawType
-      : rawType === 'image/jpg' ? 'image/jpeg'
-      : 'image/jpeg'; // fallback seguro
+    const imgType = sniffed && ALLOWED_IMG.includes(sniffed) ? sniffed
+      : ALLOWED_IMG.includes(rawType)                        ? rawType
+      : rawType === 'image/jpg'                              ? 'image/jpeg'
+      : 'image/jpeg';
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const base64 = buffer.toString('base64');
+    logger.info(`[claude] extrairProdutosNota: sniffed=${sniffed} rawType=${rawType} isPdf=${isPdf} imgType=${imgType} bytes=${buffer.length}`);
 
     const contentBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
