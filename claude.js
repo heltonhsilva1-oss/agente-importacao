@@ -130,10 +130,19 @@ function sniffMediaType(buf) {
 /**
  * Extrai produtos de uma nota fiscal (imagem ou PDF) via Claude Vision.
  * Retorna { produtos: [...] } em sucesso, { erro: string } em formato inválido, ou null em erro inesperado.
+ * @param {string} mediaUrl  - URL da mídia (UazAPI ou CDN do WhatsApp)
+ * @param {string} [webhookMimeType] - mimetype informado pelo webhook (hint, não definitivo)
  */
-async function extrairProdutosNota(mediaUrl) {
+async function extrairProdutosNota(mediaUrl, webhookMimeType = null) {
   try {
-    const response = await fetch(mediaUrl, { signal: AbortSignal.timeout(20000) });
+    // Inclui token do UazAPI: sem ele, a URL retorna o arquivo encriptado do CDN do WhatsApp
+    const uazapiToken = process.env.UAZAPI_INSTANCE_TOKEN;
+    const fetchHeaders = uazapiToken ? { token: uazapiToken } : {};
+
+    const response = await fetch(mediaUrl, {
+      headers: fetchHeaders,
+      signal: AbortSignal.timeout(20000),
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar nota`);
 
     const buffer    = Buffer.from(await response.arrayBuffer());
@@ -141,7 +150,8 @@ async function extrairProdutosNota(mediaUrl) {
     const sniffed   = sniffMediaType(buffer);
     const hexHeader = buffer.slice(0, 16).toString('hex').match(/../g).join(' ');
 
-    logger.info(`[claude] nota: rawType=${rawType} sniffed=${sniffed} bytes=${buffer.length} header=[${hexHeader}]`);
+    const urlDomain = (() => { try { return new URL(mediaUrl).hostname; } catch { return '?'; } })();
+    logger.info(`[claude] nota: domain=${urlDomain} rawType=${rawType} sniffed=${sniffed} webhookMime=${webhookMimeType} bytes=${buffer.length} header=[${hexHeader}]`);
 
     // URL expirada / inválida devolve HTML
     if (buffer[0] === 0x3C /* '<' */) {

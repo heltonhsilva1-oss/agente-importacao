@@ -137,7 +137,7 @@ async function handleFlow1(phone, estado, body, mediaUrl) {
     appendHistorico(phone, 'assistant', 'Nota recebida! Estamos processando...');
 
     // Extrai produtos via Claude Vision (não bloqueia resposta ao cliente)
-    extrairProdutosNota(mediaUrl).then(async resultado => {
+    extrairProdutosNota(mediaUrl, mimeType).then(async resultado => {
       try {
         // resultado pode ser: { produtos: [...] } | { erro: 'url_expirada'|'formato_nao_suportado' } | null
         const erroTipo       = resultado?.erro ?? null;
