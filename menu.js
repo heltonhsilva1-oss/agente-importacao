@@ -97,7 +97,7 @@ async function iniciarFlow1(phone) {
   await setConversa(phone, { estado: 'flow1_loja', dados: {} });
 }
 
-async function handleFlow1(phone, estado, body, mediaUrl) {
+async function handleFlow1(phone, estado, body, mediaUrl, mimeType) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
   saveUserMsg(phone, body);
@@ -623,7 +623,7 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType) {
   }
 
   // Fluxos ativos
-  if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl); return; }
+  if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType); return; }
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
   if (estado.startsWith('flow4_'))        { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl); return; }
 
