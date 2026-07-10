@@ -232,8 +232,6 @@ async function extrairProdutosNota(mediaUrl, webhookMimeType = null, rawContent 
         ],
       }],
     };
-    if (isPdf) createParams.betas = ['pdfs-2024-09-25'];
-
     const resp  = await client.messages.create(createParams);
     const text  = (resp.content[0]?.text || '').trim();
     const match = text.match(/\{[\s\S]*\}/);
