@@ -425,27 +425,40 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
       return;
     }
     const clienteNome = dados.cliente_nome || phone;
-    if (!dados.pedido_selecionado_id || !dados.pagamento_tipo) {
+
+    // Suporta um comprovante para vários pedidos (pedidos_pagamento) ou um só (compat)
+    const itens = dados.pedidos_pagamento?.length
+      ? dados.pedidos_pagamento
+      : (dados.pedido_selecionado_id
+          ? [{ id: dados.pedido_selecionado_id, tipo: dados.pagamento_tipo, valor: dados.pagamento_valor }]
+          : []);
+
+    if (!itens.length || !itens[0].tipo) {
       await clearConversa(phone);
       await sendText(phone,
         'Não consegui identificar o pagamento. Digite MENU e tente novamente.', true);
       return;
     }
+
     await clearConversa(phone);
     await sendText(phone, 'Comprovante recebido! Aguarde a confirmação do operador.', true);
     appendHistorico(phone, 'assistant', 'Comprovante recebido! Aguarde a confirmação do operador.');
-    const inclusao = await addPendentePagamento(
-      phone,
-      clienteNome,
-      dados.pedido_selecionado_id,
-      dados.pagamento_tipo,
-      dados.pagamento_valor
-    );
+
+    let criados = 0;
+    let totalValor = 0;
+    for (const it of itens) {
+      const inc = await addPendentePagamento(phone, clienteNome, it.id, it.tipo, it.valor);
+      if (inc.criado) criados++;
+      totalValor += Number(it.valor) || 0;
+    }
+
     const fila = await getPendentesPagamento();
-    if (inclusao.criado) {
+    if (criados > 0) {
+      const idsTxt = itens.map(i => `#${i.id}`).join(', ');
+      const tipoTxt = itens[0].tipo === 'travessia' ? 'Travessia' : 'Comissão';
       await sendText(OPERATOR_PHONE,
         `Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\n` +
-        `Pedido #${dados.pedido_selecionado_id} — ${dados.pagamento_tipo === 'travessia' ? 'Travessia' : 'Comissão'}: ${fmtCur(dados.pagamento_valor)}\n` +
+        `Pedido${itens.length > 1 ? 's' : ''} ${idsTxt} — ${tipoTxt}: ${fmtCur(totalValor)}\n` +
         `Comprovante enviado na conversa do agente.\n\n` +
         `Fila atual: ${fila.length} pagamento(s).\n` +
         `Responda OK para confirmar o primeiro, NÃO para recusar ou FILA para ver a lista.`, true);

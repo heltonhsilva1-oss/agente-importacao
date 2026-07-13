@@ -5,7 +5,7 @@
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
-const { setConversa } = require('./firestore');
+const { setConversa, clearConversa } = require('./firestore');
 const { getCobrancaPendente } = require('./pagamentos');
 const { buildPortalLink } = require('./portal-access');
 
@@ -86,8 +86,93 @@ async function notificarTodosClientes(mensagem) {
   }
 }
 
+// Agrupa notificações do mesmo cliente + status numa janela de tempo,
+// para não disparar uma mensagem por pedido quando há vários de uma vez.
+const NOTIF_DEBOUNCE_MS = 6000;
+const notifPend = new Map(); // key `${clienteId}:${status}` -> { pedidos: [], timer }
+
+function agendarNotif(clienteId, status, pedido, handler) {
+  const key = `${clienteId}:${status}`;
+  let entry = notifPend.get(key);
+  if (!entry) { entry = { pedidos: [], timer: null }; notifPend.set(key, entry); }
+  if (!entry.pedidos.some(p => String(p.id) === String(pedido.id))) entry.pedidos.push(pedido);
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    notifPend.delete(key);
+    Promise.resolve(handler(entry.pedidos))
+      .catch(err => logger.error('[notif] erro no envio agrupado:', err.message));
+  }, NOTIF_DEBOUNCE_MS);
+}
+
 function setupListeners() {
   const db = getFirestore();
+
+  // Resolve cliente + telefone válido a partir do id
+  async function resolveDestino(clienteId) {
+    const cliente = await getClienteById(clienteId);
+    if (!cliente) { logger.warn(`[notif] Cliente ${clienteId} não encontrado`); return null; }
+    const phone = clienteToWhatsapp(cliente);
+    if (!phone) { logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`); return null; }
+    return { cliente, phone };
+  }
+
+  // Envia UMA mensagem de "nota recebida" cobrindo todos os pedidos do grupo
+  async function enviarNotaRecebida(pedidos) {
+    const destino = await resolveDestino(pedidos[0].cliente_id);
+    if (!destino) return;
+    const { cliente, phone } = destino;
+    const portal = buildPortalLink(PORTAL_URL, phone);
+    const n = pedidos.length;
+    const msg = n > 1
+      ? `Olá ${cliente.nome}! Recebemos suas ${n} notas fiscais.\n\n` +
+        `Em breve vamos retirar seus pedidos no Paraguai.\n\nAcompanhe pelo portal: ${portal}`
+      : `Olá ${cliente.nome}! Recebemos sua nota fiscal.\n\n` +
+        `Em breve vamos retirar seu pedido no Paraguai.\n\nAcompanhe pelo portal: ${portal}`;
+    await sendText(phone, msg, true);
+    logger.info(`[notif] ✅ Nota recebida (${n} pedido[s]) → ${cliente.nome} (${phone})`);
+  }
+
+  // Envia UMA mensagem de mudança de status somando os valores de todos os pedidos
+  async function enviarStatus(status, pedidos) {
+    const destino = await resolveDestino(pedidos[0].cliente_id);
+    if (!destino) return;
+    const { cliente, phone } = destino;
+
+    const trav = pedidos.reduce((s, p) => s + (p.total_travessia_brl || 0), 0);
+    const com  = pedidos.reduce((s, p) => s + (p.total_comissao_brl  || 0), 0);
+
+    let msg = buildMensagemStatus(status, cliente.nome, trav, com, phone);
+    if (!msg) { logger.info(`[notif] Status ${status} sem mensagem — ignorado`); return; }
+    if (pedidos.length > 1) msg += `\n\n(Referente a ${pedidos.length} pedidos)`;
+
+    await sendText(phone, msg, true);
+    logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${status} — ${pedidos.length} pedido(s)`);
+
+    // Estados de resposta rápida (comprovante / etiqueta)
+    if (status === 'aguardando_pgto_travessia' || status === 'aguardando_pgto_comissao') {
+      const itens = pedidos
+        .map(p => { const c = getCobrancaPendente(p); return c ? { id: p.id, tipo: c.tipo, valor: c.valor } : null; })
+        .filter(Boolean);
+      if (itens.length) {
+        await setConversa(phone, {
+          estado: 'flow4_comprovante',
+          dados: {
+            cliente_nome:          cliente.nome,
+            pedidos_pagamento:     itens,                       // multi-pedido
+            pedido_selecionado_id: itens[0].id,                 // compat single
+            pagamento_tipo:        itens[0].tipo,
+            pagamento_valor:       itens.reduce((s, i) => s + i.valor, 0),
+          },
+        });
+        logger.info(`[notif] ${cliente.nome} no fluxo de comprovante (${itens.length} pedido[s])`);
+      }
+    }
+
+    if (status === 'aguardando_etiqueta') {
+      await setConversa(phone, { estado: 'flow4_etiqueta', dados: { cliente_nome: cliente.nome } });
+      logger.info(`[notif] ${cliente.nome} no fluxo de etiqueta`);
+    }
+  }
 
   // ── Listener de pedidos — detecta mudança de status ───────────────────────
   // Cache em memória para saber o status anterior de cada pedido
@@ -96,7 +181,7 @@ function setupListeners() {
 
   db.collection('pedidos').onSnapshot(
     (snap) => {
-      snap.docChanges().forEach(async (change) => {
+      snap.docChanges().forEach((change) => {
         const pedido = change.doc.data();
         const id = String(pedido.id);
 
@@ -106,35 +191,13 @@ function setupListeners() {
         }
 
         if (change.type === 'added') {
-          if (!pedidosCarregados) {
-            statusCache.set(id, pedido.status);
-            return;
-          }
-          // Novo pedido detectado após carga inicial
+          const primeiraCarga = !pedidosCarregados;
           statusCache.set(id, pedido.status);
-          logger.info(`[notif] Novo pedido detectado: #${pedido.id} status=${pedido.status} cliente_id=${pedido.cliente_id}`);
-
+          if (primeiraCarga) return;
+          // Novo pedido após carga inicial → agrupa notificação de nota recebida
+          logger.info(`[notif] Novo pedido #${pedido.id} status=${pedido.status} cliente=${pedido.cliente_id}`);
           if (pedido.status === 'nota_recebida') {
-            try {
-              const cliente = await getClienteById(pedido.cliente_id);
-              if (!cliente) {
-                logger.warn(`[notif] Cliente ${pedido.cliente_id} não encontrado para pedido #${pedido.id}`);
-                return;
-              }
-              const phone = clienteToWhatsapp(cliente);
-              if (!phone) {
-                logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`);
-                return;
-              }
-              const portal = buildPortalLink(PORTAL_URL, phone);
-              await sendText(phone,
-                `Olá ${cliente.nome}! Recebemos sua nota fiscal.\n\n` +
-                `Em breve vamos retirar seu pedido no Paraguai.\n\n` +
-                `Acompanhe pelo portal: ${portal}`, true);
-              logger.info(`[notif] ✅ Nota recebida notificada → ${cliente.nome} (${phone})`);
-            } catch (err) {
-              logger.error('[notif] Erro ao notificar nota recebida:', err.message);
-            }
+            agendarNotif(pedido.cliente_id, 'nota_recebida', pedido, enviarNotaRecebida);
           }
           return;
         }
@@ -142,71 +205,14 @@ function setupListeners() {
         // 'modified' — verifica se o status mudou
         const statusAnterior = statusCache.get(id);
         statusCache.set(id, pedido.status);
-
-        if (!pedidosCarregados) return; // ignora durante carga inicial
-        if (statusAnterior === pedido.status) return; // status não mudou
+        if (!pedidosCarregados) return;
+        if (statusAnterior === pedido.status) return;
 
         logger.info(`[notif] Pedido ${id}: ${statusAnterior} → ${pedido.status}`);
-
-        try {
-          const cliente = await getClienteById(pedido.cliente_id);
-          if (!cliente) {
-            logger.warn(`[notif] Cliente ${pedido.cliente_id} não encontrado para pedido ${id}`);
-            return;
-          }
-
-          const phone = clienteToWhatsapp(cliente);
-          if (!phone) {
-            logger.warn(`[notif] Cliente ${cliente.nome} sem telefone válido`);
-            return;
-          }
-
-          const msg = buildMensagemStatus(
-            pedido.status,
-            cliente.nome,
-            pedido.total_travessia_brl || 0,
-            pedido.total_comissao_brl || 0,
-            phone
-          );
-
-          if (msg) {
-            // forceNow=true: notificações de status sempre enviam imediatamente
-            await sendText(phone, msg, true);
-            logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${pedido.status}`);
-
-            // Coloca cliente no estado correto para responder diretamente sem navegar no menu
-            if (pedido.status === 'aguardando_pgto_travessia' || pedido.status === 'aguardando_pgto_comissao') {
-              const cobranca = getCobrancaPendente(pedido);
-              if (cobranca) {
-                await setConversa(phone, {
-                  estado: 'flow4_comprovante',
-                  dados: {
-                    cliente_nome: cliente.nome,
-                    pedido_selecionado_id: pedido.id,
-                    pagamento_tipo: cobranca.tipo,
-                    pagamento_valor: cobranca.valor,
-                  },
-                });
-                logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de comprovante`);
-              }
-            }
-
-            if (pedido.status === 'aguardando_etiqueta') {
-              await setConversa(phone, {
-                estado: 'flow4_etiqueta',
-                dados:  { cliente_nome: cliente.nome },
-              });
-              logger.info(`[notif] Cliente ${cliente.nome} colocado no fluxo de etiqueta`);
-            }
-          } else {
-            logger.info(`[notif] Status ${pedido.status} sem mensagem configurada — ignorado`);
-          }
-        } catch (err) {
-          logger.error('[notif] Erro ao notificar status:', err.message);
-        }
+        agendarNotif(pedido.cliente_id, pedido.status, pedido,
+          (grupo) => enviarStatus(pedido.status, grupo));
       });
 
-      // Marca carga inicial concluída após o primeiro snapshot completo
       if (!pedidosCarregados) {
         pedidosCarregados = true;
         logger.info(`[notif] Cache de pedidos carregado (${statusCache.size} pedidos)`);
