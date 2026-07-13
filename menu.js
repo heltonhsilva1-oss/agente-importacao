@@ -132,12 +132,21 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
         'Por favor, envie a foto, print ou PDF da nota fiscal.');
       return;
     }
-    await clearConversa(phone);
-    await sendText(phone, 'Nota recebida! Estamos processando...', true);
-    appendHistorico(phone, 'assistant', 'Nota recebida! Estamos processando...');
+
+    // Snapshot dos dados desta nota — o processamento é assíncrono e não pode
+    // depender de `dados`, que será reaproveitado se houver nota de outra loja.
+    const nota = { loja: dados.loja ?? '', vendedor: dados.vendedor ?? '', mediaUrl, mimeType, rawContent };
+    const numeroNota = (dados.count || 0) + 1;
+
+    // Continua o fluxo: pergunta se há nota de outra loja (não encerra)
+    await setConversa(phone, { estado: 'flow1_mais', dados: { count: numeroNota } });
+    await sendText(phone,
+      `Nota ${numeroNota} recebida! Estamos processando.\n\nVocê tem nota de *outra loja* nesta retirada? Responda *SIM* para enviar outra ou *NÃO* para finalizar.`,
+      true);
+    appendHistorico(phone, 'assistant', `Nota ${numeroNota} recebida. Tem nota de outra loja? SIM/NÃO`);
 
     // Extrai produtos via Claude Vision (não bloqueia resposta ao cliente)
-    extrairProdutosNota(mediaUrl, mimeType, rawContent).then(async resultado => {
+    extrairProdutosNota(nota.mediaUrl, nota.mimeType, nota.rawContent).then(async resultado => {
       try {
         // resultado pode ser: { produtos: [...] } | { erro: 'url_expirada'|'formato_nao_suportado' } | null
         const erroTipo       = resultado?.erro ?? null;
@@ -150,10 +159,10 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
         const rascunhoId = await criarRascunhoPedido({
           cliente_phone:      phone,
           cliente_id:         clienteMatch?.id ?? null,
-          cliente_nome:       clienteMatch?.nome ?? dados.nome ?? phone,
-          nome_loja:          dados.loja ?? '',
-          nome_vendedor:      dados.vendedor ?? '',
-          foto_nota_url:      mediaUrl,
+          cliente_nome:       clienteMatch?.nome ?? phone,
+          nome_loja:          nota.loja,
+          nome_vendedor:      nota.vendedor,
+          foto_nota_url:      nota.mediaUrl,
           produtos,
           extracao_status:    extracaoStatus,
         });
@@ -171,21 +180,61 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
         // Avisa cliente se o formato não for suportado
         if (erroTipo === 'formato_nao_suportado') {
           await sendText(phone,
-            'Não conseguimos ler esse arquivo. Por favor, envie a nota em formato JPG, PNG ou PDF e tente novamente.',
+            `Não conseguimos ler a nota ${numeroNota} (loja ${nota.loja}). Por favor, reenvie em formato JPG, PNG ou PDF.`,
             true);
         } else if (erroTipo === 'url_expirada') {
           await sendText(phone,
-            'O arquivo expirou antes de ser processado. Por favor, envie a nota novamente.',
+            `A nota ${numeroNota} (loja ${nota.loja}) expirou antes de ser processada. Por favor, reenvie.`,
             true);
         }
 
         await sendText(OPERATOR_PHONE,
-          `Nova nota fiscal recebida!\nCliente: ${phone}\nLoja: ${dados.loja}\nVendedor: ${dados.vendedor}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
+          `Nova nota fiscal recebida! (nota ${numeroNota})\nCliente: ${phone}\nLoja: ${nota.loja}\nVendedor: ${nota.vendedor}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
           true);
       } catch (err) {
         logger.error('[menu] flow1_arquivo pos-extracao erro:', err.message);
       }
     });
+    return;
+  }
+
+  if (estado === 'flow1_mais') {
+    const resposta = (body || '').trim().toLowerCase();
+    const count    = dados.count || 0;
+    const sim = /^(sim|s|outra|mais|adicionar|tem|quero|1)\b/.test(resposta) || resposta === 'sim';
+    const nao = /^(n[aã]o|nao|n|finalizar|pronto|acabou|encerrar|fim|so isso|s[oó] isso|0)\b/.test(resposta);
+
+    // Se o cliente já mandou outra foto direto, orienta a informar a loja primeiro
+    if (mediaUrl && !nao) {
+      await sendText(phone,
+        'Para registrar a nota da outra loja, me informe primeiro o *nome da loja*.',
+        true);
+      await setConversa(phone, { estado: 'flow1_loja', dados: { count } });
+      return;
+    }
+
+    if (sim) {
+      await send(phone, 'Confirme que vai registrar a nota de outra loja e peça o nome dessa loja.',
+        { estado: 'flow1_loja', dados: { count } },
+        'Certo! Qual o nome da *outra loja*?');
+      await setConversa(phone, { estado: 'flow1_loja', dados: { count } });
+      return;
+    }
+
+    if (nao) {
+      await clearConversa(phone);
+      await sendText(phone,
+        `Perfeito! Recebemos ${count} nota${count !== 1 ? 's' : ''} nesta retirada. Já estamos processando tudo. Obrigado!`,
+        true);
+      appendHistorico(phone, 'assistant', `Retirada finalizada com ${count} nota(s).`);
+      return;
+    }
+
+    // Não entendeu a resposta
+    await sendText(phone,
+      'Não entendi. Você tem nota de *outra loja*? Responda *SIM* para enviar outra ou *NÃO* para finalizar.',
+      true);
+    return;
   }
 }
 
