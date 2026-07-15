@@ -7,6 +7,7 @@ const {
   onlyDigits,
   normalizePhone,
   verifyPortalPhone,
+  issuePortalSession,
 } = require('./portal-access');
 
 const attempts = new Map();
@@ -52,7 +53,7 @@ function setCors(req, res) {
     res.set('Vary', 'Origin');
   }
   res.set('Access-Control-Allow-Headers', 'Content-Type');
-  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 }
 
 function sanitizeCliente(cliente) {
@@ -157,7 +158,14 @@ function setupPortal(app) {
         return;
       }
 
-      res.json({ ok: true, ...(await loadPortalData(cliente)) });
+      const sessionToken = issuePortalSession(cliente.id);
+      if (!sessionToken) {
+        logger.error('[portal] PORTAL_LINK_SECRET ausente ou inválido para criar sessão');
+        res.status(503).json({ ok: false, error: 'portal_not_configured' });
+        return;
+      }
+
+      res.json({ ok: true, sessionToken, ...(await loadPortalData(cliente)) });
     } catch (err) {
       logger.error('[portal] Erro ao carregar dados:', err.message);
       res.status(500).json({ ok: false, error: 'internal_error' });
@@ -173,4 +181,5 @@ module.exports = {
   isRateLimited,
   sanitizeCliente,
   sanitizePedido,
+  setCors,
 };

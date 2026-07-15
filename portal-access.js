@@ -45,6 +45,38 @@ function buildPortalLink(baseUrl, phone) {
   return `${baseUrl}${separator}tel=${onlyDigits(phone)}&acesso=${signature}`;
 }
 
+function issuePortalSession(clienteId, secret = getPortalLinkSecret(), now = Date.now()) {
+  if (!isPortalLinkConfigured(secret) || clienteId === undefined || clienteId === null) return '';
+  const payload = Buffer.from(JSON.stringify({
+    clienteId: String(clienteId),
+    exp: now + 30 * 60 * 1000,
+  })).toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyPortalSession(token, secret = getPortalLinkSecret(), now = Date.now()) {
+  if (!isPortalLinkConfigured(secret) || !token) return null;
+  const [payload, received] = String(token).split('.');
+  if (!payload || !received) return null;
+
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  const receivedBuffer = Buffer.from(received);
+  const expectedBuffer = Buffer.from(expected);
+  if (
+    receivedBuffer.length !== expectedBuffer.length ||
+    !crypto.timingSafeEqual(receivedBuffer, expectedBuffer)
+  ) return null;
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!decoded.clienteId || !Number.isFinite(decoded.exp) || decoded.exp <= now) return null;
+    return { clienteId: String(decoded.clienteId), exp: decoded.exp };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   onlyDigits,
   normalizePhone,
@@ -53,4 +85,6 @@ module.exports = {
   signPortalPhone,
   verifyPortalPhone,
   buildPortalLink,
+  issuePortalSession,
+  verifyPortalSession,
 };

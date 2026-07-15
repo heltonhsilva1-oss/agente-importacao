@@ -96,8 +96,13 @@ function parsePayload(raw) {
 function setupWebhook(app) {
   async function processarWebhook(req, res) {
     const secret = getWebhookSecret();
+    if (!isSecretConfigured(secret)) {
+      logger.error('[webhook] WEBHOOK_PATH_SECRET não configurado');
+      res.status(503).json({ ok: false, error: 'webhook_not_configured' });
+      return;
+    }
     // Só valida o segredo se WEBHOOK_PATH_SECRET estiver configurado
-    if (isSecretConfigured(secret) && !isValidSecret(req.params.secret, secret)) {
+    if (!isValidSecret(req.params.secret, secret)) {
       logger.warn('[webhook] Tentativa com segredo inválido');
       res.status(401).json({ ok: false, error: 'unauthorized' });
       return;
