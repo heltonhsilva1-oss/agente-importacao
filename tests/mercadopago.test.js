@@ -12,6 +12,7 @@ const {
   buildExternalReference,
   parseExternalReference,
   refreshPendingCharge,
+  reconcilePendingPixCharges,
 } = require('../mercadopago');
 const { issuePortalSession, verifyPortalSession } = require('../portal-access');
 
@@ -122,4 +123,23 @@ test('não consulta novamente uma cobrança já confirmada', async () => {
 
   assert.equal(consulted, false);
   assert.equal(result, snap);
+});
+
+test('reconcilia cobranças pendentes ativas mesmo sem o portal aberto', async () => {
+  const consulted = [];
+  const result = await reconcilePendingPixCharges({
+    now: 1000,
+    loadPending: async () => [
+      { status: 'pendente', provider_order_id: 'ORD_ATIVA', expira_em: { toMillis: () => 2000 } },
+      { status: 'pendente', provider_order_id: 'ORD_EXPIRADA', expira_em: { toMillis: () => 900 } },
+      { status: 'pendente', expira_em: { toMillis: () => 2000 } },
+    ],
+    processOrder: async (orderId) => {
+      consulted.push(orderId);
+      return { paid: true };
+    },
+  });
+
+  assert.deepEqual(consulted, ['ORD_ATIVA']);
+  assert.deepEqual(result, { checked: 1, paid: 1 });
 });

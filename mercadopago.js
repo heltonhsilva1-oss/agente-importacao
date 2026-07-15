@@ -13,6 +13,8 @@ const { allowOrigin, setCors } = require('./portal');
 const API_BASE = 'https://api.mercadopago.com';
 const CHARGE_TTL_MS = 24 * 60 * 60 * 1000;
 const CREATING_TTL_MS = 60 * 1000;
+const RECONCILIATION_INTERVAL_MS = 60 * 1000;
+let reconciliationStarted = false;
 
 function getAccessToken() {
   return String(process.env.MERCADOPAGO_ACCESS_TOKEN || '').trim();
@@ -273,6 +275,49 @@ async function refreshPendingCharge(chargeSnap, { processOrder = processOrderWeb
   return chargeSnap.ref.get();
 }
 
+async function reconcilePendingPixCharges({ loadPending, processOrder = processOrderWebhook, now = Date.now() } = {}) {
+  const charges = loadPending
+    ? await loadPending()
+    : (await getFirestore().collection('cobrancas_pix')
+      .where('status', '==', 'pendente').limit(50).get()).docs.map(doc => doc.data());
+
+  let checked = 0;
+  let paid = 0;
+  for (const charge of charges) {
+    const expiresAt = timestampMillis(charge.expira_em);
+    if (!charge.provider_order_id || (expiresAt && expiresAt <= now)) continue;
+    checked += 1;
+    try {
+      const result = await processOrder(charge.provider_order_id);
+      if (result?.paid) paid += 1;
+    } catch (error) {
+      logger.warn('[mercadopago] Falha na reconciliação Pix:', JSON.stringify(
+        error.response?.data || { message: error.message }
+      ));
+    }
+  }
+  return { checked, paid };
+}
+
+function startPixReconciliation() {
+  if (reconciliationStarted) return;
+  reconciliationStarted = true;
+  const run = async () => {
+    const result = await reconcilePendingPixCharges();
+    if (result.paid > 0) {
+      logger.info(`[mercadopago] ${result.paid} pagamento(s) Pix reconciliado(s)`);
+    }
+  };
+  const initialTimer = setTimeout(() => run().catch(error =>
+    logger.error('[mercadopago] Erro ao iniciar reconciliação:', error.message)
+  ), 5000);
+  const interval = setInterval(() => run().catch(error =>
+    logger.error('[mercadopago] Erro na reconciliação periódica:', error.message)
+  ), RECONCILIATION_INTERVAL_MS);
+  initialTimer.unref?.();
+  interval.unref?.();
+}
+
 function setupMercadoPago(app) {
   const router = express.Router();
 
@@ -379,6 +424,8 @@ function setupMercadoPago(app) {
       res.status(500).end();
     }
   });
+
+  startPixReconciliation();
 }
 
 module.exports = {
@@ -392,4 +439,5 @@ module.exports = {
   buildExternalReference,
   parseExternalReference,
   refreshPendingCharge,
+  reconcilePendingPixCharges,
 };
