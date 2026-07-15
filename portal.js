@@ -69,7 +69,7 @@ function sanitizePedido(pedido) {
     'status', 'historico_status', 'pagamento_travessia', 'pagamento_comissao',
     'status_pagamento', 'total_travessia_brl', 'total_comissao_brl',
     'transportadora', 'codigo_rastreio', 'data_envio', 'foto_nota_fiscal',
-    'dados_caixa',
+    'fotos_notas', 'dados_caixa',
   ];
   return Object.fromEntries(
     allowed.filter((key) => pedido[key] !== undefined).map((key) => [key, pedido[key]])
