@@ -9,6 +9,8 @@ const {
   verifyWebhookPathSecret,
   extractPix,
   isValidEmail,
+  buildExternalReference,
+  parseExternalReference,
 } = require('../mercadopago');
 const { issuePortalSession, verifyPortalSession } = require('../portal-access');
 
@@ -73,4 +75,22 @@ test('extrai somente os dados públicos necessários do Pix', () => {
 test('valida e-mail do pagador', () => {
   assert.equal(isValidEmail('cliente@example.com'), true);
   assert.equal(isValidEmail('invalido'), false);
+});
+
+test('gera external_reference somente com caracteres aceitos pelo Mercado Pago', () => {
+  const reference = buildExternalReference('123_travessia', 2);
+  assert.equal(reference, 'kidex_pix_123_travessia_2');
+  assert.match(reference, /^[A-Za-z0-9_-]+$/);
+  assert.deepEqual(parseExternalReference(reference), {
+    chargeId: '123_travessia',
+    attempt: 2,
+  });
+});
+
+test('continua reconhecendo external_reference do formato anterior', () => {
+  assert.deepEqual(parseExternalReference('kidex_pix|123_comissao|4'), {
+    chargeId: '123_comissao',
+    attempt: 4,
+  });
+  assert.equal(parseExternalReference('referencia-invalida'), null);
 });

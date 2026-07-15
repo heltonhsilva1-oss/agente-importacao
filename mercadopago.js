@@ -108,6 +108,21 @@ function extractPix(order) {
   };
 }
 
+function buildExternalReference(chargeId, attempt) {
+  return `kidex_pix_${chargeId}_${attempt}`;
+}
+
+function parseExternalReference(value) {
+  const reference = String(value || '');
+  // Formato atual usa apenas caracteres aceitos pelo Mercado Pago.
+  const current = /^kidex_pix_(.+)_(\d+)$/.exec(reference);
+  if (current) return { chargeId: current[1], attempt: Number(current[2]) };
+
+  // Compatibilidade com orders criadas antes da correção.
+  const legacy = /^kidex_pix\|([^|]+)\|(\d+)$/.exec(reference);
+  return legacy ? { chargeId: legacy[1], attempt: Number(legacy[2]) } : null;
+}
+
 async function reserveCharge({ pedido, cobranca, email }) {
   const db = getFirestore();
   const chargeId = `${pedido.id}_${cobranca.tipo}`;
@@ -157,7 +172,7 @@ async function createPixCharge({ pedido, cobranca, email }) {
   }
 
   const amount = Number(cobranca.valor).toFixed(2);
-  const externalReference = `kidex_pix|${reservation.chargeId}|${reservation.attempt}`;
+  const externalReference = buildExternalReference(reservation.chargeId, reservation.attempt);
 
   try {
     const order = await mercadoPagoRequest('post', '/v1/orders', {
@@ -207,10 +222,10 @@ async function createPixCharge({ pedido, cobranca, email }) {
 async function processOrderWebhook(orderId) {
   const order = await mercadoPagoRequest('get', `/v1/orders/${encodeURIComponent(orderId)}`);
   const externalReference = String(order?.external_reference || '');
-  const match = /^kidex_pix\|([^|]+)\|(\d+)$/.exec(externalReference);
-  if (!match) return { ignored: true };
+  const reference = parseExternalReference(externalReference);
+  if (!reference) return { ignored: true };
 
-  const chargeRef = getFirestore().collection('cobrancas_pix').doc(match[1]);
+  const chargeRef = getFirestore().collection('cobrancas_pix').doc(reference.chargeId);
   const chargeSnap = await chargeRef.get();
   if (!chargeSnap.exists) return { ignored: true };
   const charge = chargeSnap.data();
@@ -286,7 +301,7 @@ function setupMercadoPago(app) {
       const charge = await createPixCharge({ pedido: found.data, cobranca, email });
       res.json({ ok: true, charge });
     } catch (error) {
-      logger.error('[mercadopago] Falha ao criar Pix:', error.response?.data || error.message);
+      logger.error('[mercadopago] Falha ao criar Pix:', JSON.stringify(error.response?.data || { message: error.message }));
       res.status(error.status || 502).json({ ok: false, error: 'pix_creation_failed' });
     }
   });
@@ -357,4 +372,6 @@ module.exports = {
   processOrderWebhook,
   extractPix,
   isValidEmail,
+  buildExternalReference,
+  parseExternalReference,
 };
