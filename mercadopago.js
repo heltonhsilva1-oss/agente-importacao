@@ -257,6 +257,22 @@ async function processOrderWebhook(orderId) {
   return { paid: true };
 }
 
+async function refreshPendingCharge(chargeSnap, { processOrder = processOrderWebhook } = {}) {
+  const charge = chargeSnap.data();
+  if (charge.status !== 'pendente' || !charge.provider_order_id) return chargeSnap;
+
+  try {
+    await processOrder(charge.provider_order_id);
+  } catch (error) {
+    // A consulta do portal continua respondendo com o último estado salvo.
+    // O próximo polling tenta novamente sem derrubar a tela do cliente.
+    logger.warn('[mercadopago] Falha ao atualizar status da order:', JSON.stringify(
+      error.response?.data || { message: error.message }
+    ));
+  }
+  return chargeSnap.ref.get();
+}
+
 function setupMercadoPago(app) {
   const router = express.Router();
 
@@ -327,11 +343,12 @@ function setupMercadoPago(app) {
       res.status(400).json({ ok: false, error: 'invalid_charge_type' });
       return;
     }
-    const snap = await getFirestore().collection('cobrancas_pix').doc(`${found.data.id}_${tipo}`).get();
+    let snap = await getFirestore().collection('cobrancas_pix').doc(`${found.data.id}_${tipo}`).get();
     if (!snap.exists) {
       res.status(404).json({ ok: false, error: 'charge_not_found' });
       return;
     }
+    snap = await refreshPendingCharge(snap);
     res.json({ ok: true, charge: publicCharge(snap.data()) });
   });
 
@@ -374,4 +391,5 @@ module.exports = {
   isValidEmail,
   buildExternalReference,
   parseExternalReference,
+  refreshPendingCharge,
 };

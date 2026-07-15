@@ -11,6 +11,7 @@ const {
   isValidEmail,
   buildExternalReference,
   parseExternalReference,
+  refreshPendingCharge,
 } = require('../mercadopago');
 const { issuePortalSession, verifyPortalSession } = require('../portal-access');
 
@@ -93,4 +94,32 @@ test('continua reconhecendo external_reference do formato anterior', () => {
     attempt: 4,
   });
   assert.equal(parseExternalReference('referencia-invalida'), null);
+});
+
+test('consulta diretamente a order quando a cobrança ainda está pendente', async () => {
+  const refreshed = { data: () => ({ status: 'pago' }) };
+  const consulted = [];
+  const snap = {
+    data: () => ({ status: 'pendente', provider_order_id: 'ORD123' }),
+    ref: { get: async () => refreshed },
+  };
+
+  const result = await refreshPendingCharge(snap, {
+    processOrder: async (orderId) => { consulted.push(orderId); },
+  });
+
+  assert.deepEqual(consulted, ['ORD123']);
+  assert.equal(result, refreshed);
+});
+
+test('não consulta novamente uma cobrança já confirmada', async () => {
+  let consulted = false;
+  const snap = { data: () => ({ status: 'pago', provider_order_id: 'ORD123' }) };
+
+  const result = await refreshPendingCharge(snap, {
+    processOrder: async () => { consulted = true; },
+  });
+
+  assert.equal(consulted, false);
+  assert.equal(result, snap);
 });
