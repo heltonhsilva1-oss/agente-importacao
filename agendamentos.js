@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
+const { buildPortalLink } = require('./portal-access');
 const {
   getMensagensProcessaveis,
   claimScheduledMessage,
@@ -14,6 +15,7 @@ const {
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
+const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TZ = 'America/Sao_Paulo';
 
 function fmtCur(v) {
@@ -62,7 +64,7 @@ async function jobLembreteTravessia() {
     const msg =
       `Olá ${cliente.nome}! Você tem a taxa de travessia pendente: *${fmtCur(p.total_travessia_brl || 0)}*\n\n` +
       `Pague até sexta-feira ao meio-dia* para garantir o embarque.\n` +
-      `Avise o pagamento aqui no WhatsApp.`;
+      `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Lembrete travessia → ${cliente.nome}`);
   }
@@ -77,7 +79,7 @@ async function jobAlertaUrgenteTravessia() {
       `ULTIMO DIA, ${cliente.nome}!*\n\n` +
       `A taxa de travessia de *${fmtCur(p.total_travessia_brl || 0)}* precisa ser paga *até hoje ao meio-dia*.\n\n` +
       `Após esse horário sua mercadoria ficará para a próxima viagem.\n` +
-      `Avise o pagamento aqui no WhatsApp.`;
+      `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Alerta urgente travessia → ${cliente.nome}`);
   }
@@ -104,7 +106,7 @@ async function jobLembreteComissao() {
     const msg =
       `Olá ${cliente.nome}! Você tem a comissão pendente: *${fmtCur(p.total_comissao_brl || 0)}*\n\n` +
       `Pague até segunda-feira* para garantir o envio da sua mercadoria.\n` +
-      `Avise o pagamento aqui no WhatsApp.`;
+      `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Lembrete comissão → ${cliente.nome}`);
   }
@@ -119,7 +121,7 @@ async function jobAlertaUrgenteComissao() {
       `ULTIMO DIA, ${cliente.nome}!*\n\n` +
       `A comissão de *${fmtCur(p.total_comissao_brl || 0)}* precisa ser paga *hoje*.\n\n` +
       `Pedidos sem pagamento hoje ficam para a próxima data de envio.\n` +
-      `Avise o pagamento aqui no WhatsApp.`;
+      `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
     logger.info(`[agend] Alerta urgente comissão → ${cliente.nome}`);
   }

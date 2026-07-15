@@ -5,8 +5,7 @@
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
-const { setConversa, clearConversa } = require('./firestore');
-const { getCobrancaPendente } = require('./pagamentos');
+const { setConversa } = require('./firestore');
 const { buildPortalLink } = require('./portal-access');
 
 const AGENT_PHONE  = process.env.AGENT_PHONE  || '5511961482602';
@@ -41,21 +40,23 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
     aguardando_pgto_travessia:
       `Olá ${nome}! Sua mercadoria está pronta para embarcar.\n` +
       `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
-      `Após pagar, é só enviar o comprovante aqui nessa conversa.\nVer detalhes: ${portal}`,
+      `Pague sua taxa de travessia pelo link abaixo:\n${portal}\n\n` +
+      `A confirmação é automática. Não precisa enviar comprovante.`,
     em_transito:
       `Olá ${nome}! Sua mercadoria está a caminho de São Paulo.\n\n` +
       `Acompanhe no portal: ${portal}`,
     chegou_sp:
       `Olá ${nome}! Sua mercadoria chegou em São Paulo.\n\n` +
       `*Para garantir o envio hoje*, você precisa concluir ainda hoje:\n` +
-      `1. Pagar a comissão de *${fmtCur(com)}* (avise aqui no WhatsApp)\n` +
+      `1. Pagar a comissão de *${fmtCur(com)}* pelo portal\n` +
       `2. Enviar a etiqueta de postagem\n\n` +
       `Pedidos que não concluírem todos os passos hoje ficam para a próxima data de envio.\n\n` +
-      `Ver detalhes no portal: ${portal}`,
+      `Pague a comissão pelo link (confirmação automática): ${portal}`,
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
-      `Pague hoje para garantir o envio.\nApós pagar, é só enviar o comprovante aqui nessa conversa.\nVer detalhes: ${portal}`,
+      `Pague hoje pelo link abaixo para garantir o envio:\n${portal}\n\n` +
+      `A confirmação é automática. Não precisa enviar comprovante.`,
     aguardando_etiqueta:
       `Olá ${nome}! Pagamento confirmado.\n\n` +
       `Veja as medidas e endereço da caixa no portal: ${portal}\n\n` +
@@ -147,26 +148,6 @@ function setupListeners() {
 
     await sendText(phone, msg, true);
     logger.info(`[notif] ✅ Notificado ${cliente.nome} (${phone}): ${status} — ${pedidos.length} pedido(s)`);
-
-    // Estados de resposta rápida (comprovante / etiqueta)
-    if (status === 'aguardando_pgto_travessia' || status === 'aguardando_pgto_comissao') {
-      const itens = pedidos
-        .map(p => { const c = getCobrancaPendente(p); return c ? { id: p.id, tipo: c.tipo, valor: c.valor } : null; })
-        .filter(Boolean);
-      if (itens.length) {
-        await setConversa(phone, {
-          estado: 'flow4_comprovante',
-          dados: {
-            cliente_nome:          cliente.nome,
-            pedidos_pagamento:     itens,                       // multi-pedido
-            pedido_selecionado_id: itens[0].id,                 // compat single
-            pagamento_tipo:        itens[0].tipo,
-            pagamento_valor:       itens.reduce((s, i) => s + i.valor, 0),
-          },
-        });
-        logger.info(`[notif] ${cliente.nome} no fluxo de comprovante (${itens.length} pedido[s])`);
-      }
-    }
 
     if (status === 'aguardando_etiqueta') {
       await setConversa(phone, { estado: 'flow4_etiqueta', dados: { cliente_nome: cliente.nome } });
@@ -307,4 +288,4 @@ function setupListeners() {
   );
 }
 
-module.exports = { setupListeners };
+module.exports = { setupListeners, buildMensagemStatus };

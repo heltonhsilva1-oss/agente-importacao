@@ -8,7 +8,7 @@ const {
   getConversa, setConversa, clearConversa,
   findClienteByWhatsapp, getClientesAtivos,
   getPedidosAtivos, getPedidosPendentes,
-  addPendentePagamento, getPendentesPagamento, reservarPendente,
+  getPendentesPagamento, reservarPendente,
   finalizarPendente, devolverPendenteFila, confirmarPagamentoPedido,
   appendHistorico, getHistorico, criarRascunhoPedido,
 } = require('./firestore');
@@ -77,12 +77,12 @@ function saveUserMsg(phone, body) {
 async function showMenu(phone, clienteNome = '') {
   const ctx = { estado: 'menu', clienteNome };
   const instrucao = clienteNome
-    ? `Cumprimente ${clienteNome} e apresente as 5 opções do menu de atendimento de forma amigável.`
-    : 'Dê as boas-vindas e apresente as 5 opções do menu de atendimento de forma amigável.';
+    ? `Cumprimente ${clienteNome} e apresente as 6 opções do menu de atendimento de forma amigável.`
+    : 'Dê as boas-vindas e apresente as 6 opções do menu de atendimento de forma amigável.';
   const fallback =
     `Olá! Bem-vindo à *Kidex Importações*. 👋\n\n` +
     `1️⃣ Enviar nota fiscal\n2️⃣ Ver status do pedido\n` +
-    `3️⃣ Ver o que devo\n4️⃣ Avisar que paguei\n` +
+    `3️⃣ Ver o que devo\n4️⃣ Pagar taxa ou comissão\n` +
     `5️⃣ Enviar etiqueta de postagem\n6️⃣ Falar com o operador\n\n` +
     `Digite o número da opção.`;
   await send(phone, instrucao, ctx, fallback, 250);
@@ -341,60 +341,33 @@ async function iniciarFlow3(phone, cliente) {
     extra: `Valores em aberto:\n${itens}\nTotal: ${fmtCur(total)}\nLink portal: ${link}`,
   };
   await send(phone,
-    `Apresente os valores em aberto de ${cliente.nome} com total. Inclua o link do portal. Mencione que pode pagar pelo fluxo 4.`,
-    ctx, `Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}\n\nVer no portal: ${link}`, 400);
+    `Apresente os valores em aberto de ${cliente.nome} com total. Informe que o pagamento deve ser feito pelo link do portal e será confirmado automaticamente.`,
+    ctx, `Valores em aberto:\n${itens}\n\nTotal: ${fmtCur(total)}\n\nPague pelo portal (confirmação automática): ${link}`, 400);
 }
 
-// ── flow 4: avisar pagamento ──────────────────────────────────────────────────
+// ── flow 4: pagar pelo portal ─────────────────────────────────────────────────
 
 async function iniciarFlow4(phone, cliente) {
-  // Se tem múltiplos pedidos com pagamento pendente, pergunta qual
   const pedidos = await getPedidosPendentes(cliente.id);
-
-  if (pedidos.length > 1) {
-    const lista = pedidos.map((p, i) => {
-      const desc = (p.produtos || []).map(pr => pr.descricao).join(', ') || `Pedido #${p.id}`;
-      const cobranca = getCobrancaPendente(p);
-      const tipoLabel = cobranca?.tipo === 'travessia' ? 'Travessia' : 'Comissão';
-      return `${i + 1}. Pedido #${String(p.id).padStart(3,'0')} — ${desc} | ${tipoLabel}: ${fmtCur(cobranca?.valor)}`;
-    }).join('\n');
-
-    await send(phone,
-      `Pergunte a ${cliente.nome} qual pedido ele está pagando e liste as opções.`,
-      { clienteNome: cliente.nome, extra: `Pedidos pendentes:\n${lista}` },
-      `Qual pedido você está pagando?\n\n${lista}\n\nDigite o número da opção.`, 300);
-
-    await setConversa(phone, {
-      estado: 'flow4_selecao_pedido',
-      dados:  {
-        cliente_id: cliente.id,
-        cliente_nome: cliente.nome,
-        pedidos: pedidos.map(p => {
-          const cobranca = getCobrancaPendente(p);
-          return { id: p.id, tipo: cobranca?.tipo, valor: cobranca?.valor };
-        }),
-      },
-    });
-    return;
-  }
 
   if (!pedidos.length) {
     await send(phone, `Informe ${cliente.nome} que não há pagamentos pendentes.`,
       { clienteNome: cliente.nome }, `Olá ${cliente.nome}! Não há pagamentos pendentes no momento.`);
+    await clearConversa(phone);
     return;
   }
 
-  const cobranca = getCobrancaPendente(pedidos[0]);
-  await sendText(phone, 'Por favor, envie o comprovante de pagamento.', true);
-  await setConversa(phone, {
-    estado: 'flow4_comprovante',
-    dados: {
-      cliente_nome: cliente.nome,
-      pedido_selecionado_id: pedidos[0].id,
-      pagamento_tipo: cobranca.tipo,
-      pagamento_valor: cobranca.valor,
-    },
-  });
+  const link = portalLink(phone);
+  const lista = pedidos.map((p) => {
+    const cobranca = getCobrancaPendente(p);
+    const tipoLabel = cobranca?.tipo === 'travessia' ? 'Taxa de travessia' : 'Comissão';
+    return `Pedido #${String(p.id).padStart(3, '0')} — ${tipoLabel}: ${fmtCur(cobranca?.valor)}`;
+  }).join('\n');
+  await send(phone,
+    `Informe os pagamentos pendentes de ${cliente.nome}. Oriente a pagar exclusivamente pelo link do portal. Diga que a confirmação é automática e que não precisa enviar comprovante.`,
+    { clienteNome: cliente.nome, extra: `Pagamentos pendentes:\n${lista}\nLink: ${link}` },
+    `Pagamentos pendentes:\n${lista}\n\nPague pelo link abaixo:\n${link}\n\nA confirmação é automática. Não precisa enviar comprovante.`, 350);
+  await clearConversa(phone);
 }
 
 async function handleFlow4(phone, estado, body, mediaUrl) {
@@ -402,67 +375,11 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
   const dados = conv?.dados || {};
   saveUserMsg(phone, body);
 
-  if (estado === 'flow4_selecao_pedido') {
-    const idx = parseInt(body) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= (dados.pedidos || []).length) {
-      await send(phone, 'Opção inválida, peça para digitar o número correto.', {},
-        'Opção inválida. Digite o número do pedido.');
-      return;
-    }
-    const selecionado = dados.pedidos[idx];
-    dados.pedido_selecionado_id = selecionado.id;
-    dados.pagamento_tipo = selecionado.tipo;
-    dados.pagamento_valor = selecionado.valor;
-    await sendText(phone, 'Por favor, envie o comprovante de pagamento.', true);
-    await setConversa(phone, { estado: 'flow4_comprovante', dados });
-    return;
-  }
-
-  if (estado === 'flow4_comprovante') {
-    if (!mediaUrl) {
-      await send(phone, 'Lembre que precisa enviar o comprovante como foto ou PDF.', { estado },
-        'Envie o comprovante como foto ou PDF.');
-      return;
-    }
-    const clienteNome = dados.cliente_nome || phone;
-
-    // Suporta um comprovante para vários pedidos (pedidos_pagamento) ou um só (compat)
-    const itens = dados.pedidos_pagamento?.length
-      ? dados.pedidos_pagamento
-      : (dados.pedido_selecionado_id
-          ? [{ id: dados.pedido_selecionado_id, tipo: dados.pagamento_tipo, valor: dados.pagamento_valor }]
-          : []);
-
-    if (!itens.length || !itens[0].tipo) {
-      await clearConversa(phone);
-      await sendText(phone,
-        'Não consegui identificar o pagamento. Digite MENU e tente novamente.', true);
-      return;
-    }
-
+  // Conversas iniciadas antes da mudança deixam de solicitar comprovante.
+  if (estado === 'flow4_selecao_pedido' || estado === 'flow4_comprovante') {
     await clearConversa(phone);
-    await sendText(phone, 'Comprovante recebido! Aguarde a confirmação do operador.', true);
-    appendHistorico(phone, 'assistant', 'Comprovante recebido! Aguarde a confirmação do operador.');
-
-    let criados = 0;
-    let totalValor = 0;
-    for (const it of itens) {
-      const inc = await addPendentePagamento(phone, clienteNome, it.id, it.tipo, it.valor);
-      if (inc.criado) criados++;
-      totalValor += Number(it.valor) || 0;
-    }
-
-    const fila = await getPendentesPagamento();
-    if (criados > 0) {
-      const idsTxt = itens.map(i => `#${i.id}`).join(', ');
-      const tipoTxt = itens[0].tipo === 'travessia' ? 'Travessia' : 'Comissão';
-      await sendText(OPERATOR_PHONE,
-        `Aviso de pagamento!\nCliente: ${phone} — ${clienteNome}\n` +
-        `Pedido${itens.length > 1 ? 's' : ''} ${idsTxt} — ${tipoTxt}: ${fmtCur(totalValor)}\n` +
-        `Comprovante enviado na conversa do agente.\n\n` +
-        `Fila atual: ${fila.length} pagamento(s).\n` +
-        `Responda OK para confirmar o primeiro, NÃO para recusar ou FILA para ver a lista.`, true);
-    }
+    const cliente = await findClienteByWhatsapp(phone);
+    if (cliente) await iniciarFlow4(phone, cliente);
     return;
   }
 

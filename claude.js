@@ -17,14 +17,16 @@ Idioma: português brasileiro informal mas profissional.
 Regras absolutas:
 - Nunca compartilhe dados de outros clientes
 - Não invente informações sobre pedidos ou preços
-- Se não souber responder, ofereça conectar com o operador (opção 5)
+- Se não souber responder, ofereça conectar com o operador (opção 6)
 - Mantenha o foco nos fluxos de atendimento da empresa
+- Pagamentos de taxa de travessia e comissão são feitos exclusivamente pelo link do portal
+- Nunca peça comprovante de pagamento; a confirmação do Pix é automática
 
 Fluxos disponíveis:
 1️⃣ Enviar nota fiscal
 2️⃣ Ver status do meu pedido
 3️⃣ Ver o que devo
-4️⃣ Avisar que paguei
+4️⃣ Pagar taxa ou comissão
 5️⃣ Enviar etiqueta de postagem
 6️⃣ Falar com o operador`;
 
@@ -95,7 +97,7 @@ async function detectarIntencao(texto) {
       system:
         'Classifique a intenção. Responda SOMENTE com o número:\n' +
         '1=enviar nota fiscal  2=ver status do pedido  3=ver débitos/valores\n' +
-        '4=avisar pagamento realizado  5=enviar etiqueta de postagem\n' +
+        '4=pagar taxa/comissão ou informar pagamento realizado  5=enviar etiqueta de postagem\n' +
         '6=falar com operador  0=não identificado',
       messages: [{ role: 'user', content: texto }],
     });
