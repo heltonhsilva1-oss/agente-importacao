@@ -6,10 +6,18 @@ const crypto = require('crypto');
 
 const {
   verifyWebhookSignature,
+  verifyWebhookPathSecret,
   extractPix,
   isValidEmail,
 } = require('../mercadopago');
 const { issuePortalSession, verifyPortalSession } = require('../portal-access');
+
+test('aceita somente o segredo exato no caminho do webhook', () => {
+  const secret = 'a'.repeat(64);
+  assert.equal(verifyWebhookPathSecret(secret, secret), true);
+  assert.equal(verifyWebhookPathSecret('b'.repeat(64), secret), false);
+  assert.equal(verifyWebhookPathSecret('', secret), false);
+});
 
 test('valida assinatura oficial do webhook com comparação HMAC', () => {
   const secret = 'segredo-de-webhook-com-tamanho-suficiente';

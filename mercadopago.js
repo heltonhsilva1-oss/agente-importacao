@@ -22,6 +22,10 @@ function getWebhookSecret() {
   return String(process.env.MERCADOPAGO_WEBHOOK_SECRET || '').trim();
 }
 
+function getWebhookPathSecret() {
+  return String(process.env.MERCADOPAGO_WEBHOOK_PATH_SECRET || '').trim();
+}
+
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
 }
@@ -59,6 +63,14 @@ function verifyWebhookSignature({ xSignature, xRequestId, dataId, secret = getWe
   const manifest = `id:${String(dataId).toLowerCase()};request-id:${xRequestId};ts:${ts};`;
   const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
   const receivedBuffer = Buffer.from(v1);
+  const expectedBuffer = Buffer.from(expected);
+  return receivedBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+}
+
+function verifyWebhookPathSecret(received, expected = getWebhookPathSecret()) {
+  if (!received || expected.length < 32) return false;
+  const receivedBuffer = Buffer.from(String(received));
   const expectedBuffer = Buffer.from(expected);
   return receivedBuffer.length === expectedBuffer.length &&
     crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
@@ -310,14 +322,15 @@ function setupMercadoPago(app) {
 
   app.use('/portal-api', router);
 
-  app.post('/mercadopago/webhook', async (req, res) => {
+  app.post(['/mercadopago/webhook', '/mercadopago/webhook/:pathSecret'], async (req, res) => {
     const dataId = String(req.query['data.id'] || req.query.data_id || req.body?.data?.id || '');
     const signatureOk = verifyWebhookSignature({
       xSignature: req.headers['x-signature'],
       xRequestId: req.headers['x-request-id'],
       dataId,
     });
-    if (!signatureOk) {
+    const pathSecretOk = verifyWebhookPathSecret(req.params.pathSecret);
+    if (!signatureOk && !pathSecretOk) {
       res.status(401).end();
       return;
     }
@@ -339,6 +352,7 @@ function setupMercadoPago(app) {
 module.exports = {
   setupMercadoPago,
   verifyWebhookSignature,
+  verifyWebhookPathSecret,
   createPixCharge,
   processOrderWebhook,
   extractPix,
