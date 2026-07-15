@@ -70,7 +70,7 @@ async function responder(ctx, instrucao, maxTokens = 200) {
 
   try {
     const resp = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: mensagemParaClaude }],
@@ -90,7 +90,7 @@ async function detectarIntencao(texto) {
   if (!texto?.trim()) return 0;
   try {
     const resp = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5',
       max_tokens: 5,
       system:
         'Classifique a intenção. Responda SOMENTE com o número:\n' +
