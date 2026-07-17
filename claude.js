@@ -234,11 +234,21 @@ async function extrairProdutosNota(mediaUrl, webhookMimeType = null, rawContent 
         ],
       }],
     };
-    const resp  = await client.messages.create(createParams);
-    const text  = (resp.content[0]?.text || '').trim();
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
+    const arquivo = {
+      buffer,
+      mimeType: isPdf ? 'application/pdf' : imgType,
+    };
+
+    try {
+      const resp  = await client.messages.create(createParams);
+      const text  = (resp.content[0]?.text || '').trim();
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) return { erro: 'extracao_falhou', arquivo };
+      return { ...JSON.parse(match[0]), arquivo };
+    } catch (err) {
+      logger.error('[claude] extrairProdutosNota IA erro:', err.message);
+      return { erro: 'extracao_falhou', arquivo };
+    }
   } catch (err) {
     logger.error('[claude] extrairProdutosNota erro:', err.message);
     return null;

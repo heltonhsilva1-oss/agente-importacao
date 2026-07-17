@@ -4,6 +4,7 @@
 
 const { logger } = require('./logger');
 const { responder, detectarIntencao, extrairProdutosNota } = require('./claude');
+const { salvarNotaRecebida } = require('./nota-storage');
 const {
   getConversa, setConversa, clearConversa,
   findClienteByWhatsapp, getClientesAtivos,
@@ -156,13 +157,27 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
         // Resolve cliente pelo número WhatsApp (trata nono dígito e prefixo 55)
         const clienteMatch = await findClienteByWhatsapp(phone);
 
+        let fotoNota = null;
+        if (resultado?.arquivo?.buffer) {
+          try {
+            fotoNota = await salvarNotaRecebida(resultado.arquivo.buffer, {
+              mimeType: resultado.arquivo.mimeType,
+              phone,
+              loja: nota.loja,
+            });
+          } catch (storageErr) {
+            logger.error('[menu] não foi possível arquivar nota:', storageErr.message);
+          }
+        }
+
         const rascunhoId = await criarRascunhoPedido({
           cliente_phone:      phone,
           cliente_id:         clienteMatch?.id ?? null,
           cliente_nome:       clienteMatch?.nome ?? phone,
           nome_loja:          nota.loja,
           nome_vendedor:      nota.vendedor,
-          foto_nota_url:      nota.mediaUrl,
+          foto_nota_url:      fotoNota?.url || nota.mediaUrl,
+          foto_nota:          fotoNota,
           produtos,
           extracao_status:    extracaoStatus,
         });
