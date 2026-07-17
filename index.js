@@ -20,6 +20,7 @@ const { logger } = require('./logger');
 const { setupWebhook } = require('./webhook');
 const { setupPortal } = require('./portal');
 const { setupMercadoPago } = require('./mercadopago');
+const { setupAdminNotas } = require('./admin-notas');
 const { setupListeners } = require('./notificacoes');
 const { setupAgendamentos } = require('./agendamentos');
 
@@ -30,6 +31,7 @@ app.use(express.json({ limit: '10mb' }));
 setupWebhook(app);
 setupPortal(app);
 setupMercadoPago(app);
+setupAdminNotas(app);
 
 // Listeners Firestore em tempo real (notificações automáticas de status)
 setupListeners();
