@@ -83,3 +83,23 @@ test('não arrisca associação quando duas mídias estão próximas', () => {
 
   assert.equal(resultado, null);
 });
+
+test('usa a mídia mais próxima quando existe uma vantagem clara de horário', () => {
+  const resultado = selecionarMensagemNota([
+    {
+      messageid: 'correta',
+      fromMe: false,
+      messageType: 'imageMessage',
+      messageTimestamp: 1700000010000,
+    },
+    {
+      messageid: 'anterior',
+      fromMe: false,
+      messageType: 'imageMessage',
+      messageTimestamp: 1699999960000,
+    },
+  ], { criadoEm: 1700000015000 });
+
+  assert.equal(resultado.mensagem.messageid, 'correta');
+  assert.equal(resultado.criterio, 'horario_unico');
+});

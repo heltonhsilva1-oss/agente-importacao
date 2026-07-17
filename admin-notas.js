@@ -8,6 +8,8 @@ const { salvarNotaRecebida } = require('./nota-storage');
 
 const TIPOS_NOTA = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
 const JANELA_NOTA_MS = 90 * 1000;
+const DISTANCIA_FORTE_MS = 60 * 1000;
+const VANTAGEM_MINIMA_MS = 20 * 1000;
 
 const ORIGINS = new Set([
   'https://minhaimportacao-5442a.web.app',
@@ -116,7 +118,13 @@ function selecionarMensagemNota(mensagens, { origem, criadoEm }) {
     .filter(item => item.distancia <= JANELA_NOTA_MS)
     .sort((a, b) => a.distancia - b.distancia);
 
-  if (proximas.length === 1) {
+  if (
+    proximas.length === 1 ||
+    (
+      proximas[0]?.distancia <= DISTANCIA_FORTE_MS &&
+      proximas[1]?.distancia - proximas[0].distancia >= VANTAGEM_MINIMA_MS
+    )
+  ) {
     return { mensagem: proximas[0].mensagem, criterio: 'horario_unico' };
   }
   return null;
