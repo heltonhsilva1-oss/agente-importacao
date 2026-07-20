@@ -252,6 +252,18 @@ async function getConfiguracoes() {
   return snap.exists ? snap.data() : {};
 }
 
+// Viagem com o maior id = criada por último (ids são sequenciais, ver nextId no frontend).
+// Usada para saber se a viagem atual foi aberta depois do último corte configurado.
+async function getViagemMaisRecente() {
+  const snap = await db().collection('viagens').get();
+  let latest = null;
+  snap.forEach(doc => {
+    const v = doc.data();
+    if (!latest || Number(v.id) > Number(latest.id)) latest = v;
+  });
+  return latest;
+}
+
 // ── pendentes de pagamento ────────────────────────────────────────────────────
 // Cada documento aguardando compõe a fila de confirmação do operador.
 
@@ -460,6 +472,7 @@ module.exports = {
   updatePedidoStatus,
   confirmarPagamentoPedido,
   getConfiguracoes,
+  getViagemMaisRecente,
   addPendentePagamento,
   getPendentesPagamento,
   reservarPendente,

@@ -12,6 +12,7 @@ const {
   getPendentesPagamento, reservarPendente,
   finalizarPendente, devolverPendenteFila, confirmarPagamentoPedido,
   appendHistorico, getHistorico, criarRascunhoPedido,
+  getConfiguracoes, getViagemMaisRecente,
 } = require('./firestore');
 const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
@@ -92,7 +93,47 @@ async function showMenu(phone, clienteNome = '') {
 
 // ── flow 1: enviar nota fiscal ────────────────────────────────────────────────
 
+// Calcula o instante do último corte (dia + hora configurados) que já passou,
+// relativo a `now`. Ex: corte = sexta 11h, hoje é quarta → retorna a sexta anterior.
+function calcUltimoCorte(horarioCorte, diaCorte, now = new Date()) {
+  const [hS, mS] = String(horarioCorte || '11:00').split(':');
+  const hC = parseInt(hS, 10) || 0;
+  const mC = parseInt(mS, 10) || 0;
+  const diaAlvo = Number.isInteger(diaCorte) ? diaCorte : 5;
+
+  const dow = now.getDay();
+  const diasAtras = (dow - diaAlvo + 7) % 7;
+
+  const candidato = new Date(now);
+  candidato.setDate(now.getDate() - diasAtras);
+  candidato.setHours(hC, mC, 0, 0);
+
+  // Se hoje é o dia do corte mas o horário ainda não chegou, o "último corte"
+  // foi o da semana anterior, não o de hoje.
+  if (candidato > now) candidato.setDate(candidato.getDate() - 7);
+  return candidato;
+}
+
+// A viagem atual só aceita notas se foi aberta DEPOIS do último corte que já
+// passou. Fecha automaticamente no dia/hora configurado; só reabre quando o
+// operador cria uma viagem nova — não depende de status "concluída".
+async function estaAceitandoNotas() {
+  const [cfg, viagem] = await Promise.all([getConfiguracoes(), getViagemMaisRecente()]);
+  const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte);
+  if (!viagem?.criado_em) return false;
+  const criadoEm = new Date(viagem.criado_em);
+  return !isNaN(criadoEm) && criadoEm >= ultimoCorte;
+}
+
 async function iniciarFlow1(phone) {
+  if (!(await estaAceitandoNotas())) {
+    await sendText(phone,
+      'No momento não estamos mais aceitando notas fiscais — o corte desta semana já passou. ' +
+      'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.',
+      true);
+    return;
+  }
+
   await send(phone, 'Peça o nome da loja de onde veio a mercadoria.', { estado: 'flow1_loja' },
     'Por favor, me informe o nome da loja.');
   await setConversa(phone, { estado: 'flow1_loja', dados: {} });
