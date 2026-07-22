@@ -120,9 +120,17 @@ function calcUltimoCorte(horarioCorte, diaCorte, now = new Date()) {
 async function estaAceitandoNotas() {
   const [cfg, viagem] = await Promise.all([getConfiguracoes(), getViagemMaisRecente()]);
   const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte);
-  if (!viagem?.criado_em) return false;
-  const criadoEm = new Date(viagem.criado_em);
-  return !isNaN(criadoEm) && criadoEm >= ultimoCorte;
+  if (!viagem) return false;
+
+  // criado_em é o mais preciso. Viagens criadas antes desta funcionalidade não
+  // têm esse campo — usa data_saida como aproximação para não bloquear uma
+  // viagem legada que já estava legitimamente em andamento. Sem nenhuma das
+  // duas referências, não bloqueia (evita falso bloqueio por dado ausente).
+  const referencia = viagem.criado_em || viagem.data_saida;
+  if (!referencia) return true;
+
+  const dataRef = new Date(referencia);
+  return !isNaN(dataRef) && dataRef >= ultimoCorte;
 }
 
 async function iniciarFlow1(phone) {
