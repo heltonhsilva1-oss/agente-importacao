@@ -93,24 +93,57 @@ async function showMenu(phone, clienteNome = '') {
 
 // ── flow 1: enviar nota fiscal ────────────────────────────────────────────────
 
-// Calcula o instante do último corte (dia + hora configurados) que já passou,
-// relativo a `now`. Ex: corte = sexta 11h, hoje é quarta → retorna a sexta anterior.
-function calcUltimoCorte(horarioCorte, diaCorte, now = new Date()) {
+// Extrai ano/mês/dia/hora/minuto/dia-da-semana no horário de Brasília, sem
+// depender do fuso do servidor onde o Node roda (Railway costuma rodar em UTC).
+function componentesSaoPaulo(instante = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    weekday: 'short',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+    hour12: false,
+  });
+  const partes = Object.fromEntries(fmt.formatToParts(instante).map(p => [p.type, p.value]));
+  const DIAS = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    year: Number(partes.year),
+    month: Number(partes.month),
+    day: Number(partes.day),
+    weekday: DIAS[partes.weekday],
+    hour: partes.hour === '24' ? 0 : Number(partes.hour),
+    minute: Number(partes.minute),
+  };
+}
+
+// Constrói o instante absoluto (correto em qualquer fuso) de uma data/hora
+// falada em horário de Brasília. Brasil não tem mais horário de verão desde
+// 2019, então o offset -03:00 é fixo o ano todo.
+function instanteSaoPaulo(year, month, day, hour, minute) {
+  const pad = n => String(n).padStart(2, '0');
+  return new Date(`${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00-03:00`);
+}
+
+// Calcula o instante do último corte (dia + hora configurados, em horário de
+// Brasília) que já passou. Ex: corte = sexta 11h, hoje é quarta → sexta anterior.
+function calcUltimoCorte(horarioCorte, diaCorte, instanteAgora = new Date()) {
   const [hS, mS] = String(horarioCorte || '11:00').split(':');
   const hC = parseInt(hS, 10) || 0;
   const mC = parseInt(mS, 10) || 0;
   const diaAlvo = Number.isInteger(diaCorte) ? diaCorte : 5;
 
-  const dow = now.getDay();
-  const diasAtras = (dow - diaAlvo + 7) % 7;
+  const agora = componentesSaoPaulo(instanteAgora);
+  const diasAtras = (agora.weekday - diaAlvo + 7) % 7;
 
-  const candidato = new Date(now);
-  candidato.setDate(now.getDate() - diasAtras);
-  candidato.setHours(hC, mC, 0, 0);
+  // Rola a data (ano/mês/dia) `diasAtras` dias para trás, em UTC puro — sem
+  // ambiguidade de fuso — e então monta o instante do corte nesse dia.
+  const baseUtc = new Date(Date.UTC(agora.year, agora.month - 1, agora.day));
+  baseUtc.setUTCDate(baseUtc.getUTCDate() - diasAtras);
+  let candidato = instanteSaoPaulo(baseUtc.getUTCFullYear(), baseUtc.getUTCMonth() + 1, baseUtc.getUTCDate(), hC, mC);
 
   // Se hoje é o dia do corte mas o horário ainda não chegou, o "último corte"
-  // foi o da semana anterior, não o de hoje.
-  if (candidato > now) candidato.setDate(candidato.getDate() - 7);
+  // foi o da semana anterior, não o de hoje. Subtrai 7 dias em milissegundos
+  // (seguro: Brasil não tem DST, então 7 dias = 7×24h sempre).
+  if (candidato > instanteAgora) candidato = new Date(candidato.getTime() - 7 * 24 * 60 * 60 * 1000);
   return candidato;
 }
 
@@ -122,14 +155,20 @@ async function estaAceitandoNotas() {
   const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte);
   if (!viagem) return false;
 
-  // criado_em é o mais preciso. Viagens criadas antes desta funcionalidade não
-  // têm esse campo — usa data_saida como aproximação para não bloquear uma
-  // viagem legada que já estava legitimamente em andamento. Sem nenhuma das
-  // duas referências, não bloqueia (evita falso bloqueio por dado ausente).
-  const referencia = viagem.criado_em || viagem.data_saida;
-  if (!referencia) return true;
+  // criado_em é o mais preciso (timestamp completo). Viagens criadas antes
+  // desta funcionalidade não têm esse campo — usa data_saida (só a data, sem
+  // hora) como aproximação, tratada como meia-noite em Brasília, para não
+  // bloquear uma viagem legada que já estava legitimamente em andamento. Sem
+  // nenhuma das duas referências, não bloqueia (evita falso bloqueio por dado ausente).
+  let dataRef = null;
+  if (viagem.criado_em) {
+    dataRef = new Date(viagem.criado_em);
+  } else if (viagem.data_saida) {
+    const [y, m, d] = String(viagem.data_saida).split('-').map(Number);
+    if (y && m && d) dataRef = instanteSaoPaulo(y, m, d, 0, 0);
+  }
+  if (!dataRef) return true;
 
-  const dataRef = new Date(referencia);
   return !isNaN(dataRef) && dataRef >= ultimoCorte;
 }
 
