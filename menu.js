@@ -666,6 +666,28 @@ async function handleOperadorResposta(body) {
   return true;
 }
 
+// Executa a opção numérica 1-6 do menu principal. Extraído para reuso: além do
+// estado idle/menu, também é chamado quando o cliente digita um número estando
+// preso num estado de espera "leve" (etiqueta/comprovante) — ver ESTADOS_COM_ESCAPE.
+async function executarComandoMenu(phone, cliente, comando) {
+  switch (comando) {
+    case '1': await iniciarFlow1(phone); return;
+    case '2': await iniciarFlow2(phone, cliente); return;
+    case '3': await iniciarFlow3(phone, cliente); return;
+    case '4': await iniciarFlow4(phone, cliente); return;
+    case '5':
+      await sendText(phone, 'Por favor, envie a etiqueta de postagem.', true);
+      await setConversa(phone, { estado: 'flow4_etiqueta', dados: { cliente_nome: cliente.nome } });
+      return;
+    case '6':
+      await send(phone, 'Informe que vai chamar o operador e peça para aguardar.', {},
+        'Vou chamar o operador. Aguarde um momento.');
+      await sendText(OPERATOR_PHONE, `📞 Cliente ${phone} quer falar com você.`, true);
+      await clearConversa(phone);
+      return;
+  }
+}
+
 // ── roteador principal ────────────────────────────────────────────────────────
 
 async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent = null) {
@@ -704,6 +726,17 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     return;
   }
 
+  // Estados de espera "leve" não devem travar o cliente se ele quiser começar
+  // outra coisa — ex: cliente preso esperando etiqueta de um pedido antigo,
+  // mas quer mandar nota de uma compra nova. Comando numérico funciona aqui
+  // como comando global, igual já funciona a partir do idle/menu.
+  const ESTADOS_COM_ESCAPE = ['flow4_etiqueta', 'flow4_comprovante'];
+  if (ESTADOS_COM_ESCAPE.includes(estado) && /^[1-6]$/.test(bodyNorm)) {
+    saveUserMsg(normalPhone, bodyNorm);
+    await executarComandoMenu(normalPhone, clienteCadastrado, bodyNorm);
+    return;
+  }
+
   // Fluxos ativos
   if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType, rawContent); return; }
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
@@ -712,22 +745,8 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   // Estado idle/menu — seleção numérica
   if (/^[1-6]$/.test(bodyNorm)) {
     saveUserMsg(normalPhone, bodyNorm);
-    switch (bodyNorm) {
-      case '1': await iniciarFlow1(normalPhone); return;
-      case '2': await iniciarFlow2(normalPhone, clienteCadastrado); return;
-      case '3': await iniciarFlow3(normalPhone, clienteCadastrado); return;
-      case '4': await iniciarFlow4(normalPhone, clienteCadastrado); return;
-      case '5':
-        await sendText(normalPhone, 'Por favor, envie a etiqueta de postagem.', true);
-        await setConversa(normalPhone, { estado: 'flow4_etiqueta', dados: { cliente_nome: clienteCadastrado.nome } });
-        return;
-      case '6':
-        await send(normalPhone, 'Informe que vai chamar o operador e peça para aguardar.', {},
-          'Vou chamar o operador. Aguarde um momento.');
-        await sendText(OPERATOR_PHONE, `📞 Cliente ${normalPhone} quer falar com você.`, true);
-        await clearConversa(normalPhone);
-        return;
-    }
+    await executarComandoMenu(normalPhone, clienteCadastrado, bodyNorm);
+    return;
   }
 
   // Texto livre — Claude detecta intenção
