@@ -19,13 +19,16 @@ function diasParaVencimento(diaVencimento, hoje = hojeSaoPauloYMD()) {
 }
 
 // Status real da mensalidade, comparando a data de hoje com o dia de
-// vencimento cadastrado — não depende de o campo status_mensalidade ter
-// sido atualizado manualmente.
+// vencimento cadastrado. "Paga" só é válida se registrada no mesmo mês/ano
+// do vencimento atual — senão um pagamento antigo ficaria válido para sempre.
 function statusMensalidadeEfetivo(cliente, hoje = hojeSaoPauloYMD()) {
-  if (cliente?.status_mensalidade === 'paga') return 'paga';
-
   const dia = parseInt(cliente?.data_vencimento_mensalidade, 10);
   if (isNaN(dia)) return cliente?.status_mensalidade || 'pendente';
+
+  if (cliente?.status_mensalidade === 'paga' && cliente.data_pagamento_mensalidade) {
+    const [py, pm] = String(cliente.data_pagamento_mensalidade).split('-').map(Number);
+    if (py === hoje.year && pm === hoje.month) return 'paga';
+  }
 
   return diasParaVencimento(dia, hoje) < 0 ? 'vencida' : 'pendente';
 }
