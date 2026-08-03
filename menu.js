@@ -584,7 +584,54 @@ function formatarFila(pendentes) {
     `ou use OK 2 / NÃO 2 para escolher outro número.`;
 }
 
+// Aviso único (não recorrente) para clientes já vencidos no momento em que o
+// bug do jobAvisoVip foi corrigido — explica o vencimento e a falha no
+// sistema que impediu o aviso automático antes. Marca cada cliente avisado
+// para nunca reenviar, mesmo se o comando for disparado de novo.
+async function jobAvisoErroSistemicoMensalidade() {
+  const { getFirestore } = require('firebase-admin/firestore');
+  const db = getFirestore();
+  const snap = await db.collection('clientes').get();
+  let enviados = 0;
+  const nomes = [];
+  for (const doc of snap.docs) {
+    const c = doc.data();
+    if (c.aviso_erro_sistemico_mensalidade_enviado) continue;
+    if (statusMensalidadeEfetivo(c) !== 'vencida') continue;
+    const phone = normalizePhone(c.telefone || '');
+    if (!phone || phone.length < 12) continue;
+    const dia = c.data_vencimento_mensalidade;
+    const msg =
+      `Olá ${c.nome}! Identificamos que sua mensalidade VIP venceu no dia ${dia} e está em aberto.\n\n` +
+      `Por uma falha no nosso sistema, o aviso de cobrança não foi enviado antes do vencimento — pedimos desculpas pelo transtorno.\n\n` +
+      `Por favor, regularize o pagamento assim que possível para continuar com o atendimento normalmente.`;
+    try {
+      await sendText(phone, msg, true);
+      await doc.ref.update({ aviso_erro_sistemico_mensalidade_enviado: true });
+      enviados++;
+      nomes.push(c.nome);
+      await new Promise(r => setTimeout(r, 500)); // delay anti-spam
+    } catch (err) {
+      logger.error(`[menu] falha ao avisar mensalidade vencida (${c.nome}):`, err.message);
+    }
+  }
+  return { enviados, nomes };
+}
+
 async function handleOperadorResposta(body) {
+  // Comando único do operador: dispara o aviso de erro sistêmico acima.
+  const normalizadoCmd = (body || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  if (normalizadoCmd === 'AVISAR VENCIDAS') {
+    const resultado = await jobAvisoErroSistemicoMensalidade();
+    await sendText(OPERATOR_PHONE,
+      resultado.enviados > 0
+        ? `Aviso enviado para ${resultado.enviados} cliente(s) com mensalidade vencida:\n${resultado.nomes.join(', ')}`
+        : 'Nenhum cliente com mensalidade vencida pendente de aviso (todos já foram avisados ou nenhum está vencido).',
+      true);
+    return true;
+  }
+
   // Broadcast — operador manda "AVISO: mensagem" ou "TODOS: mensagem"
   const broadcastMatch = (body || '').match(/^(?:AVISO|TODOS):\s*(.+)/si);
   if (broadcastMatch) {
