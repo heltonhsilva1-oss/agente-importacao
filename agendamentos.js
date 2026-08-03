@@ -12,6 +12,7 @@ const {
   completeScheduledMessage,
   failScheduledMessage,
 } = require('./firestore');
+const { diasParaVencimento } = require('./mensalidade');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
@@ -139,27 +140,29 @@ async function jobCorteComissao() {
     `Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
 }
 
-// ── Aviso de VIP vencendo — todo dia às 9h ────────────────────────────────────
+// ── Aviso de VIP vencendo (3 dias antes) e vencida (no dia) — todo dia às 9h ─
 async function jobAvisoVip() {
-  logger.info('[agend] Aviso de VIP vencendo');
+  logger.info('[agend] Aviso de VIP vencendo/vencida');
   const db = getFirestore();
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
   const snap = await db.collection('clientes').get();
   for (const doc of snap.docs) {
     const c = doc.data();
     if (c.status_mensalidade === 'paga') continue;
-    const diaVenc = parseInt(c.data_vencimento_mensalidade);
+    const diaVenc = parseInt(c.data_vencimento_mensalidade, 10);
     if (isNaN(diaVenc)) continue;
-    const venc = new Date(hoje.getFullYear(), hoje.getMonth(), diaVenc);
-    if (venc < hoje) venc.setMonth(venc.getMonth() + 1);
-    const diffDias = Math.round((venc.getTime() - hoje.getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDias !== 3) continue;
+    const diffDias = diasParaVencimento(diaVenc);
     const phone = clienteToWhatsapp(c);
     if (!phone) continue;
-    await sendText(phone,
-      `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias. Entre em contato para renovar.`, true);
-    logger.info(`[agend] Aviso VIP → ${c.nome}`);
+
+    if (diffDias === 3) {
+      await sendText(phone,
+        `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias. Entre em contato para renovar.`, true);
+      logger.info(`[agend] Aviso VIP (3 dias) → ${c.nome}`);
+    } else if (diffDias === 0) {
+      await sendText(phone,
+        `Olá ${c.nome}! Sua mensalidade VIP vence hoje. Entre em contato para renovar e continuar com o atendimento.`, true);
+      logger.info(`[agend] Aviso VIP (vence hoje) → ${c.nome}`);
+    }
   }
 }
 

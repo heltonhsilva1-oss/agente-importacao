@@ -17,6 +17,7 @@ const {
 const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
 const { buildPortalLink } = require('./portal-access');
+const { statusMensalidadeEfetivo } = require('./mensalidade');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
@@ -703,6 +704,14 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   const clienteCadastrado = await findClienteByWhatsapp(normalPhone);
   if (!clienteCadastrado) {
     logger.info(`[menu] Número não cadastrado ignorado: ${normalPhone}`);
+    return;
+  }
+
+  // Mensalidade VIP vencida — bloqueia qualquer fluxo até regularizar.
+  // Tem prioridade sobre tudo, inclusive o comando global "menu".
+  if (statusMensalidadeEfetivo(clienteCadastrado) === 'vencida') {
+    logger.info(`[menu] Bloqueado por mensalidade vencida: ${normalPhone}`);
+    await sendText(normalPhone, 'Cliente não ativo. Mensalidade do VIP pendente.', true);
     return;
   }
 
