@@ -2,7 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getBearerToken, sniffType, selecionarMensagemNota } = require('../admin-notas');
+const {
+  getBearerToken,
+  selecionarNotaDoPedido,
+  sniffType,
+  selecionarMensagemNota,
+} = require('../admin-notas');
 
 test('extrai somente token Bearer válido', () => {
   assert.equal(getBearerToken('Bearer abc.def'), 'abc.def');
@@ -14,6 +19,26 @@ test('reconhece os formatos permitidos das notas', () => {
   assert.equal(sniffType(Buffer.from([0xff, 0xd8, 0xff, 0x00])), 'image/jpeg');
   assert.equal(sniffType(Buffer.from('%PDF-1.7')), 'application/pdf');
   assert.equal(sniffType(Buffer.from([0x89, 0x50, 0x4e, 0x47])), 'image/png');
+});
+
+test('seleciona a nota exata do pedido pelo índice', () => {
+  const pedido = {
+    fotos_notas: [
+      { url: 'https://storage/primeira.jpg' },
+      { url: 'https://storage/segunda.pdf' },
+    ],
+  };
+
+  assert.equal(selecionarNotaDoPedido(pedido, 1), 'https://storage/segunda.pdf');
+  assert.equal(selecionarNotaDoPedido(pedido, 2), null);
+  assert.equal(selecionarNotaDoPedido(pedido, -1), null);
+});
+
+test('usa a nota fiscal antiga quando o pedido ainda não tem fotos_notas', () => {
+  assert.equal(
+    selecionarNotaDoPedido({ foto_nota_fiscal: { dataUrl: 'data:image/png;base64,AA==' } }, 0),
+    'data:image/png;base64,AA=='
+  );
 });
 
 test('associa nota antiga pela URL exata da mensagem', () => {

@@ -130,6 +130,16 @@ function selecionarMensagemNota(mensagens, { origem, criadoEm }) {
   return null;
 }
 
+function selecionarNotaDoPedido(pedido, indice) {
+  if (!Number.isInteger(indice) || indice < 0) return null;
+  const notas = Array.isArray(pedido?.fotos_notas) && pedido.fotos_notas.length
+    ? pedido.fotos_notas
+    : (pedido?.foto_nota_fiscal ? [pedido.foto_nota_fiscal] : []);
+  const nota = notas[indice];
+  if (!nota || typeof nota !== 'object') return null;
+  return nota.url || nota.dataUrl || null;
+}
+
 async function chamarUazapi(path, payload) {
   const baseUrl = String(process.env.UAZAPI_SERVER_URL || '').replace(/\/$/, '');
   const token = process.env.UAZAPI_INSTANCE_TOKEN;
@@ -189,6 +199,43 @@ function setupAdminNotas(app) {
   router.options('/notas/:rascunhoId', (req, res) => {
     setCors(req, res);
     res.status(204).end();
+  });
+
+  router.options('/pedidos/:pedidoId/notas/:indice', (req, res) => {
+    setCors(req, res);
+    res.status(204).end();
+  });
+
+  router.get('/pedidos/:pedidoId/notas/:indice', async (req, res) => {
+    setCors(req, res);
+    try {
+      if (!(await validarAdmin(req))) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+
+      const indice = Number(req.params.indice);
+      const pedidoDoc = await getFirestore()
+        .collection('pedidos')
+        .doc(String(req.params.pedidoId))
+        .get();
+      if (!pedidoDoc.exists) {
+        res.status(404).json({ error: 'nota_not_found' });
+        return;
+      }
+
+      const origem = selecionarNotaDoPedido(pedidoDoc.data(), indice);
+      if (!origem) {
+        res.status(404).json({ error: 'nota_not_found' });
+        return;
+      }
+
+      const { buffer, type } = await baixarOrigem(origem, false);
+      res.type(type).send(buffer);
+    } catch (error) {
+      logger.error('[admin-notas] erro ao baixar nota do pedido:', error.message);
+      if (!res.headersSent) res.status(410).json({ error: 'nota_unavailable' });
+    }
   });
 
   router.get('/notas/:rascunhoId', async (req, res) => {
@@ -265,6 +312,7 @@ function setupAdminNotas(app) {
 
 module.exports = {
   getBearerToken,
+  selecionarNotaDoPedido,
   sniffType,
   selecionarMensagemNota,
   setupAdminNotas,
