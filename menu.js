@@ -18,6 +18,7 @@ const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
 const { buildPortalLink } = require('./portal-access');
 const { statusMensalidadeEfetivo } = require('./mensalidade');
+const { padronizarNomeLoja } = require('./lojas');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
@@ -197,7 +198,7 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
       await send(phone, 'Peça o nome da loja novamente.', { estado }, 'Por favor, informe o nome da loja.');
       return;
     }
-    dados.loja = body.trim();
+    dados.loja = padronizarNomeLoja(body);
     await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', { estado: 'flow1_vendedor', dados },
       'Agora me informe o nome do vendedor.');
     await setConversa(phone, { estado: 'flow1_vendedor', dados });
