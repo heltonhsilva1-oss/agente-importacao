@@ -11,3 +11,9 @@ test('bot salva os nomes oficiais definidos para as lojas', () => {
   assert.equal(padronizarNomeLoja('prime'), 'PRIMESHOP');
   assert.equal(padronizarNomeLoja('Prime Shop'), 'PRIMESHOP');
 });
+
+test('bot usa as lojas parametrizadas no Firestore', () => {
+  const regras = [{ id: 'cell-shop', nomeOficial: 'Cell Shop', aliases: ['cell', 'CellShop'] }];
+  assert.equal(padronizarNomeLoja('cell', regras), 'Cell Shop');
+  assert.equal(padronizarNomeLoja('CellShop', regras), 'Cell Shop');
+});

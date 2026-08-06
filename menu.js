@@ -198,7 +198,8 @@ async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent =
       await send(phone, 'Peça o nome da loja novamente.', { estado }, 'Por favor, informe o nome da loja.');
       return;
     }
-    dados.loja = padronizarNomeLoja(body);
+    const configuracoes = await getConfiguracoes();
+    dados.loja = padronizarNomeLoja(body, configuracoes.lojasPadronizadas);
     await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', { estado: 'flow1_vendedor', dados },
       'Agora me informe o nome do vendedor.');
     await setConversa(phone, { estado: 'flow1_vendedor', dados });
