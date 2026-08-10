@@ -29,6 +29,23 @@ const data = {
     { id: 20, cliente_id: 2, nome_loja: 'Loja Dois', status: 'postado' },
   ],
   categorias: [{ id: 1, nome: 'Eletrônicos', tipo: 'percentual', valor: 0.1 }],
+  separacoes_clientes: [
+    {
+      separacao_id: 'viagem_7__cliente_1', cliente_id: '1', viagem_id: '7', status: 'concluida',
+      pedido_ids: ['10'], lojas: ['Loja Um'], total_esperado: 3,
+      foto_final: { url: 'https://storage.example/foto-cliente-1.jpg', path: 'privado/1.jpg', name: 'foto.jpg', type: 'image/jpeg' },
+      finalizado_por: 'admin-secreto',
+    },
+    {
+      separacao_id: 'viagem_7__cliente_2', cliente_id: '2', viagem_id: '7', status: 'concluida',
+      pedido_ids: ['20'], lojas: ['Loja Dois'], total_esperado: 1,
+      foto_final: { url: 'https://storage.example/foto-cliente-2.jpg', path: 'privado/2.jpg' },
+    },
+    {
+      separacao_id: 'rascunho-cliente-1', cliente_id: '1', viagem_id: '8', status: 'em_andamento',
+      pedido_ids: ['10'], foto_final: { url: 'https://storage.example/rascunho.jpg' },
+    },
+  ],
 };
 
 const firestoreModule = require.resolve('firebase-admin/firestore');
@@ -83,6 +100,11 @@ test('CPF e quatro dígitos retornam somente os dados daquele cliente', async ()
     assert.equal(body.cliente.telefone, undefined);
     assert.deepEqual(body.pedidos.map((p) => p.id), [10]);
     assert.equal(body.pedidos[0].segredo_interno, undefined);
+    assert.equal(body.separacoes.length, 1);
+    assert.equal(body.separacoes[0].id, 'viagem_7__cliente_1');
+    assert.equal(body.separacoes[0].foto.url, 'https://storage.example/foto-cliente-1.jpg');
+    assert.equal(body.separacoes[0].foto.path, undefined);
+    assert.equal(body.separacoes[0].finalizado_por, undefined);
   } finally {
     await server.close();
   }

@@ -76,6 +76,26 @@ function sanitizePedido(pedido) {
   );
 }
 
+function sanitizeSeparacaoCliente(separacao) {
+  const foto = separacao?.foto_final;
+  const url = typeof foto?.url === 'string' && foto.url.startsWith('https://')
+    ? foto.url
+    : '';
+  if (!url) return null;
+  return {
+    id: String(separacao.separacao_id || ''),
+    viagem_id: String(separacao.viagem_id || ''),
+    pedido_ids: Array.isArray(separacao.pedido_ids) ? separacao.pedido_ids.map(String) : [],
+    lojas: Array.isArray(separacao.lojas) ? separacao.lojas.map(String) : [],
+    total_esperado: Math.max(0, Number(separacao.total_esperado) || 0),
+    foto: {
+      url,
+      name: String(foto.name || 'separacao.jpg'),
+      type: String(foto.type || 'image/jpeg'),
+    },
+  };
+}
+
 async function findClienteByCredentials(cpf, ultimosDigitos) {
   const cpfLimpo = onlyDigits(cpf);
   const digitos = onlyDigits(ultimosDigitos);
@@ -107,9 +127,10 @@ async function findClienteBySignedPhone(phone, signature) {
 
 async function loadPortalData(cliente) {
   const db = getFirestore();
-  const [pedidosSnap, categoriasSnap] = await Promise.all([
+  const [pedidosSnap, categoriasSnap, separacoesSnap] = await Promise.all([
     db.collection('pedidos').get(),
     db.collection('categorias').get(),
+    db.collection('separacoes_clientes').get(),
   ]);
 
   const pedidos = pedidosSnap.docs
@@ -118,10 +139,25 @@ async function loadPortalData(cliente) {
     .sort((a, b) => Number(b.id) - Number(a.id))
     .map(sanitizePedido);
 
+  const pedidoIdsCliente = new Set(pedidos.map((pedido) => String(pedido.id)));
+  const separacoes = separacoesSnap.docs
+    .map((doc) => doc.data())
+    .filter((separacao) => (
+      String(separacao.cliente_id) === String(cliente.id)
+      && separacao.status === 'concluida'
+      && Array.isArray(separacao.pedido_ids)
+      && separacao.pedido_ids.length > 0
+      && separacao.pedido_ids.every((pedidoId) => pedidoIdsCliente.has(String(pedidoId)))
+    ))
+    .map(sanitizeSeparacaoCliente)
+    .filter(Boolean)
+    .sort((a, b) => Number(b.viagem_id) - Number(a.viagem_id));
+
   return {
     cliente: sanitizeCliente(cliente),
     pedidos,
     categorias: categoriasSnap.docs.map((doc) => doc.data()),
+    separacoes,
   };
 }
 
@@ -181,5 +217,6 @@ module.exports = {
   isRateLimited,
   sanitizeCliente,
   sanitizePedido,
+  sanitizeSeparacaoCliente,
   setCors,
 };
