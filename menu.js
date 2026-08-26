@@ -149,29 +149,31 @@ function calcUltimoCorte(horarioCorte, diaCorte, instanteAgora = new Date()) {
   return candidato;
 }
 
-// A viagem atual só aceita notas se foi aberta DEPOIS do último corte que já
-// passou. Fecha automaticamente no dia/hora configurado; só reabre quando o
-// operador cria uma viagem nova — não depende de status "concluída".
+// A viagem atual aceita notas enquanto sua data de saída pertence ao ciclo
+// aberto pelo dia/horário de corte configurado. A data em que o cadastro da
+// viagem foi criado não deve antecipar o fechamento da janela operacional.
+function dataReferenciaCicloViagem(viagem) {
+  if (viagem?.data_saida) {
+    const [y, m, d] = String(viagem.data_saida).split('-').map(Number);
+    if (y && m && d) return instanteSaoPaulo(y, m, d, 0, 0);
+  }
+
+  // Compatibilidade com documentos legados que não possuem data_saida.
+  if (viagem?.criado_em) return new Date(viagem.criado_em);
+  return null;
+}
+
+function viagemPertenceAoCicloAtual(viagem, ultimoCorte) {
+  if (!viagem) return false;
+  const dataRef = dataReferenciaCicloViagem(viagem);
+  if (!dataRef) return true;
+  return !isNaN(dataRef) && dataRef >= ultimoCorte;
+}
+
 async function estaAceitandoNotas() {
   const [cfg, viagem] = await Promise.all([getConfiguracoes(), getViagemMaisRecente()]);
   const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte);
-  if (!viagem) return false;
-
-  // criado_em é o mais preciso (timestamp completo). Viagens criadas antes
-  // desta funcionalidade não têm esse campo — usa data_saida (só a data, sem
-  // hora) como aproximação, tratada como meia-noite em Brasília, para não
-  // bloquear uma viagem legada que já estava legitimamente em andamento. Sem
-  // nenhuma das duas referências, não bloqueia (evita falso bloqueio por dado ausente).
-  let dataRef = null;
-  if (viagem.criado_em) {
-    dataRef = new Date(viagem.criado_em);
-  } else if (viagem.data_saida) {
-    const [y, m, d] = String(viagem.data_saida).split('-').map(Number);
-    if (y && m && d) dataRef = instanteSaoPaulo(y, m, d, 0, 0);
-  }
-  if (!dataRef) return true;
-
-  return !isNaN(dataRef) && dataRef >= ultimoCorte;
+  return viagemPertenceAoCicloAtual(viagem, ultimoCorte);
 }
 
 async function iniciarFlow1(phone) {
@@ -836,4 +838,7 @@ module.exports = {
   showMenu,
   parseComandoFila,
   formatarFila,
+  calcUltimoCorte,
+  dataReferenciaCicloViagem,
+  viagemPertenceAoCicloAtual,
 };
