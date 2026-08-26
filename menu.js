@@ -24,6 +24,7 @@ const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
 const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TIMEOUT_MS     = 10 * 60 * 1000;
+const ESTADOS_SEM_TIMEOUT = new Set(['idle', 'menu', 'flow4_comprovante', 'flow4_selecao_pedido']);
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,10 @@ function isTimedOut(conv) {
     ? conv.ultima_atividade.toDate()
     : new Date(conv.ultima_atividade);
   return Date.now() - last.getTime() > TIMEOUT_MS;
+}
+
+function estadoExpiraPorInatividade(estado) {
+  return !ESTADOS_SEM_TIMEOUT.has(estado);
 }
 
 const STATUS_LABELS = {
@@ -766,10 +771,10 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     return;
   }
 
-  // Timeout — reinicia o fluxo (exceto estados de pagamento/etiqueta que precisam de tempo real)
-  const ESTADOS_SEM_TIMEOUT = ['idle', 'menu', 'flow4_comprovante', 'flow4_etiqueta', 'flow4_selecao_pedido'];
+  // Timeout — reinicia fluxos ativos; uma espera antiga por etiqueta não pode
+  // capturar como etiqueta a nota fiscal enviada dias depois.
   const conv = await getConversa(normalPhone);
-  if (conv && !ESTADOS_SEM_TIMEOUT.includes(conv.estado) && isTimedOut(conv)) {
+  if (conv && estadoExpiraPorInatividade(conv.estado) && isTimedOut(conv)) {
     await send(normalPhone, 'Informe que a sessão expirou e vai reiniciar.',
       {}, 'Sua sessão expirou. Vou reiniciar o atendimento.');
     await clearConversa(normalPhone);
@@ -841,4 +846,5 @@ module.exports = {
   calcUltimoCorte,
   dataReferenciaCicloViagem,
   viagemPertenceAoCicloAtual,
+  estadoExpiraPorInatividade,
 };
