@@ -3,10 +3,47 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  calcCorteDaViagem,
   calcUltimoCorte,
   dataReferenciaCicloViagem,
+  viagemAceitaNotas,
   viagemPertenceAoCicloAtual,
 } = require('../menu');
+
+test('viagem atual permanece aberta até o corte associado à data de retorno', () => {
+  const viagem = {
+    id: 9,
+    status: 'em_andamento',
+    data_saida: '2026-09-03',
+    data_retorno: '2026-09-11',
+  };
+  const cfg = { horarioCorte: '17:00', diaCorte: 5 };
+
+  assert.equal(calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte).toISOString(), '2026-09-11T20:00:00.000Z');
+  assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-08T15:00:00.000Z')), true);
+  assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-11T20:00:01.000Z')), false);
+});
+
+test('retorno no sábado usa o corte configurado da sexta-feira anterior', () => {
+  const viagem = {
+    status: 'em_andamento',
+    data_saida: '2026-08-25',
+    data_retorno: '2026-08-29',
+  };
+  const cfg = { horarioCorte: '17:00', diaCorte: 5 };
+
+  assert.equal(calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte).toISOString(), '2026-08-28T20:00:00.000Z');
+});
+
+test('viagem concluída não aceita novas notas', () => {
+  const viagem = {
+    status: 'concluida',
+    data_saida: '2026-09-03',
+    data_retorno: '2026-09-11',
+  };
+
+  assert.equal(viagemAceitaNotas(viagem, { horarioCorte: '17:00', diaCorte: 5 }), false);
+});
 
 test('viagem criada antecipadamente usa data de saída para respeitar o corte configurado', () => {
   const viagem = {

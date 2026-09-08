@@ -175,10 +175,48 @@ function viagemPertenceAoCicloAtual(viagem, ultimoCorte) {
   return !isNaN(dataRef) && dataRef >= ultimoCorte;
 }
 
+// O corte operacional de uma viagem é a ocorrência configurada imediatamente
+// anterior (ou igual) à data de retorno. Ex.: retorno no sábado e corte na
+// sexta → encerra na sexta; retorno na própria sexta → encerra naquele dia.
+// Isso evita fechar uma viagem ainda em andamento usando a sexta-feira que
+// aconteceu logo depois da saída.
+function calcCorteDaViagem(viagem, horarioCorte, diaCorte) {
+  if (!viagem?.data_retorno) return null;
+  const [y, m, d] = String(viagem.data_retorno).split('-').map(Number);
+  if (!y || !m || !d) return null;
+
+  const [hS, mS] = String(horarioCorte || '11:00').split(':');
+  const hC = parseInt(hS, 10) || 0;
+  const mC = parseInt(mS, 10) || 0;
+  const diaAlvo = Number.isInteger(diaCorte) ? diaCorte : 5;
+
+  const retornoUtc = new Date(Date.UTC(y, m - 1, d));
+  const diasAtras = (retornoUtc.getUTCDay() - diaAlvo + 7) % 7;
+  retornoUtc.setUTCDate(retornoUtc.getUTCDate() - diasAtras);
+
+  return instanteSaoPaulo(
+    retornoUtc.getUTCFullYear(),
+    retornoUtc.getUTCMonth() + 1,
+    retornoUtc.getUTCDate(),
+    hC,
+    mC,
+  );
+}
+
+function viagemAceitaNotas(viagem, cfg, instanteAgora = new Date()) {
+  if (!viagem || (viagem.status && viagem.status !== 'em_andamento')) return false;
+
+  const corteDaViagem = calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte);
+  if (corteDaViagem) return instanteAgora <= corteDaViagem;
+
+  // Compatibilidade com viagens antigas sem data de retorno.
+  const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte, instanteAgora);
+  return viagemPertenceAoCicloAtual(viagem, ultimoCorte);
+}
+
 async function estaAceitandoNotas() {
   const [cfg, viagem] = await Promise.all([getConfiguracoes(), getViagemMaisRecente()]);
-  const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte);
-  return viagemPertenceAoCicloAtual(viagem, ultimoCorte);
+  return viagemAceitaNotas(viagem, cfg);
 }
 
 async function iniciarFlow1(phone) {
@@ -843,8 +881,10 @@ module.exports = {
   showMenu,
   parseComandoFila,
   formatarFila,
+  calcCorteDaViagem,
   calcUltimoCorte,
   dataReferenciaCicloViagem,
+  viagemAceitaNotas,
   viagemPertenceAoCicloAtual,
   estadoExpiraPorInatividade,
 };
