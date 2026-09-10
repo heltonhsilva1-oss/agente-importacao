@@ -66,8 +66,9 @@ function sanitizeCliente(cliente) {
 function sanitizePedido(pedido) {
   const allowed = [
     'id', 'cliente_id', 'viagem_id', 'nome_loja', 'cotacao_dolar', 'produtos',
-    'status', 'historico_status', 'pagamento_travessia', 'pagamento_comissao',
+    'status', 'historico_status', 'pagamento_travessia', 'pagamento_comissao_antecipada', 'pagamento_comissao',
     'status_pagamento', 'total_travessia_brl', 'total_comissao_brl',
+    'comissao_antecipada_percentual', 'valor_comissao_antecipada_brl',
     'transportadora', 'codigo_rastreio', 'data_envio', 'foto_nota_fiscal',
     'fotos_notas', 'dados_caixa',
   ];

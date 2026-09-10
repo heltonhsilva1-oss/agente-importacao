@@ -21,7 +21,6 @@ const { statusMensalidadeEfetivo } = require('./mensalidade');
 const { padronizarNomeLoja } = require('./lojas');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
-const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
 const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TIMEOUT_MS     = 10 * 60 * 1000;
 const ESTADOS_SEM_TIMEOUT = new Set(['idle', 'menu', 'flow4_comprovante', 'flow4_selecao_pedido']);
@@ -58,6 +57,7 @@ const STATUS_LABELS = {
   nota_recebida:             'Nota Recebida 📝',
   retirado_paraguai:         'Retirado no Paraguai 🇵🇾',
   aguardando_pgto_travessia: 'Aguardando Pgto. Travessia 💰',
+  aguardando_pgto_comissao_antecipada: 'Aguardando 50% da Comissão 💰',
   em_transito:               'Em Trânsito 🚚',
   chegou_sp:                 'Chegou em SP 🎉',
   aguardando_pgto_comissao:  'Aguardando Pgto. Comissão 💰',
@@ -481,8 +481,15 @@ async function iniciarFlow3(phone, cliente) {
       linha += ` | Travessia: ${fmtCur(trav)} (${qtd}x ${fmtCur(trav/Math.max(qtd,1))})`;
       total += trav;
     }
+    if (p.status === 'aguardando_pgto_comissao_antecipada') {
+      const cobranca = getCobrancaPendente(p);
+      linha += ` | 50% da comissão: ${fmtCur(cobranca?.valor)}`;
+      total += Number(cobranca?.valor) || 0;
+    }
     if (p.status === 'aguardando_pgto_comissao' && com > 0) {
-      linha += ` | Comissão: ${fmtCur(com)}`; total += com;
+      const cobranca = getCobrancaPendente(p);
+      linha += ` | Comissão: ${fmtCur(cobranca?.valor)}`;
+      total += Number(cobranca?.valor) || 0;
     }
     return linha;
   }).join('\n');
@@ -511,7 +518,9 @@ async function iniciarFlow4(phone, cliente) {
   const link = portalLink(phone);
   const lista = pedidos.map((p) => {
     const cobranca = getCobrancaPendente(p);
-    const tipoLabel = cobranca?.tipo === 'travessia' ? 'Taxa de travessia' : 'Comissão';
+    const tipoLabel = cobranca?.tipo === 'travessia'
+      ? 'Taxa de travessia'
+      : cobranca?.tipo === 'comissao_antecipada' ? '50% da comissão' : 'Comissão';
     return `Pedido #${String(p.id).padStart(3, '0')} — ${tipoLabel}: ${fmtCur(cobranca?.valor)}`;
   }).join('\n');
   await send(phone,
@@ -571,6 +580,8 @@ async function handleFlow4(phone, estado, body, mediaUrl) {
 
 // ── confirmação de entrega (SIM / NÃO) ───────────────────────────────────────
 
+// Mantido para compatibilidade com conversas antigas ainda persistidas.
+// eslint-disable-next-line no-unused-vars
 async function handleConfirmacaoEntrega(phone, body) {
   const conv  = await getConversa(phone);
   const dados = conv?.dados || {};
@@ -583,7 +594,7 @@ async function handleConfirmacaoEntrega(phone, body) {
     appendHistorico(phone, 'assistant', 'Que otimo! Obrigado por confirmar.');
     // Marca pedido como entrega confirmada no Firestore
     if (dados.pedido_id) {
-      const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+      const { getFirestore } = require('firebase-admin/firestore');
       const snap = await getFirestore().collection('pedidos').where('id', '==', Number(dados.pedido_id)).limit(1).get();
       if (!snap.empty) await snap.docs[0].ref.update({ entrega_confirmada: true });
     }
@@ -623,7 +634,7 @@ function formatarFila(pendentes) {
 
   const itens = pendentes.map((p, index) =>
     `${index + 1}. Pedido #${p.pedido_id} — ${p.cliente_nome || p.cliente_numero}\n` +
-    `   ${p.tipo === 'travessia' ? 'Travessia' : 'Comissão'}: ${fmtCur(p.valor)}`
+    `   ${p.tipo === 'travessia' ? 'Travessia' : p.tipo === 'comissao_antecipada' ? '50% da comissão' : 'Comissão'}: ${fmtCur(p.valor)}`
   ).join('\n\n');
 
   return `Pagamentos aguardando confirmação:\n\n${itens}\n\n` +
@@ -693,7 +704,9 @@ async function handleOperadorResposta(body) {
         await sendText(tel, `📢 *Kidex Importações*\n\n${mensagem}`, true);
         enviados++;
         await new Promise(r => setTimeout(r, 500)); // delay anti-spam
-      } catch (_) {}
+      } catch {
+        // O broadcast continua para os demais clientes.
+      }
     }
     await sendText(OPERATOR_PHONE, `Broadcast enviado para ${enviados} cliente(s).`, true);
     return true;
@@ -751,8 +764,12 @@ async function handleOperadorResposta(body) {
   await finalizarPendente(pendente.id, 'confirmado');
   await sendText(pendente.cliente_numero,
     pendente.tipo === 'travessia'
-      ? 'Pagamento da travessia confirmado! Sua mercadoria seguirá para São Paulo.'
-      : 'Pagamento da comissão confirmado! Agora envie a etiqueta de postagem.', true);
+      ? resultado.novoStatus === 'aguardando_pgto_comissao_antecipada'
+        ? 'Pagamento da travessia confirmado! Nesta viagem há uma etapa de 50% da comissão disponível no portal.'
+        : 'Pagamento da travessia confirmado! Sua mercadoria seguirá para São Paulo.'
+      : pendente.tipo === 'comissao_antecipada'
+        ? 'Pagamento de 50% da comissão confirmado! Sua mercadoria seguirá para São Paulo.'
+        : 'Pagamento da comissão confirmado! Agora envie a etiqueta de postagem.', true);
 
   const restantes = await getPendentesPagamento();
   await sendText(OPERATOR_PHONE,

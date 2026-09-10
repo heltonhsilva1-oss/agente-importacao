@@ -147,6 +147,7 @@ const STATUS_ATIVOS = [
   'nota_recebida',
   'retirado_paraguai',
   'aguardando_pgto_travessia',
+  'aguardando_pgto_comissao_antecipada',
   'em_transito',
   'chegou_sp',
   'aguardando_pgto_comissao',
@@ -222,9 +223,25 @@ async function confirmarPagamentoPedido(pedidoId, tipo) {
     return { ok: false, motivo: 'pagamento_nao_pendente' };
   }
 
+  let proximoStatus = cobranca.proximoStatus;
+  const camposExtras = {};
+  if (tipo === 'travessia') {
+    const viagemSnap = await db().collection('viagens').doc(String(pedido.viagem_id)).get();
+    const percentual = Number(viagemSnap.data()?.comissao_antecipada_percentual) || 0;
+    const valorAntecipado = Math.round((Number(pedido.total_comissao_brl) || 0) * percentual) / 100;
+    if (percentual > 0 && valorAntecipado >= 0.01) {
+      proximoStatus = 'aguardando_pgto_comissao_antecipada';
+      camposExtras.comissao_antecipada_percentual = percentual;
+      camposExtras.valor_comissao_antecipada_brl = valorAntecipado;
+      if (!pedido.pagamento_comissao_antecipada) {
+        camposExtras.pagamento_comissao_antecipada = 'pendente';
+      }
+    }
+  }
+
   const now = new Date();
   const entry = {
-    status: cobranca.proximoStatus,
+    status: proximoStatus,
     data: now.toLocaleDateString('pt-BR'),
     hora: now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
   };
@@ -233,16 +250,22 @@ async function confirmarPagamentoPedido(pedidoId, tipo) {
     [cobranca.campoPagamento]: 'pago',
     status_pagamento: getStatusPagamento(
       pedido,
-      tipo === 'travessia' ? 'comissao' : 'travessia'
+      tipo === 'comissao' ? 'travessia' : 'comissao'
     ) === 'pago' ? 'pago' : 'pendente',
-    status: cobranca.proximoStatus,
+    ...camposExtras,
+    status: proximoStatus,
     historico_status: FieldValue.arrayUnion(entry),
   });
 
   logger.info(
-    `[firestore] Pedido ${pedidoId}: pagamento de ${tipo} confirmado → ${cobranca.proximoStatus}`
+    `[firestore] Pedido ${pedidoId}: pagamento de ${tipo} confirmado → ${proximoStatus}`
   );
-  return { ok: true, novoStatus: cobranca.proximoStatus };
+  return {
+    ok: true,
+    novoStatus: proximoStatus,
+    comissaoAntecipadaPercentual: camposExtras.comissao_antecipada_percentual || null,
+    valorComissaoAntecipada: camposExtras.valor_comissao_antecipada_brl || null,
+  };
 }
 
 // ── configurações ─────────────────────────────────────────────────────────────
@@ -429,7 +452,9 @@ async function appendHistorico(phone, role, content) {
     const hist = (conv.historico || []).slice(-9);
     hist.push({ role, content: String(content).slice(0, 500) });
     await db().collection('conversas').doc(phone).set({ historico: hist }, { merge: true });
-  } catch (_) {}
+  } catch {
+    // Histórico é auxiliar e não deve interromper o atendimento.
+  }
 }
 
 async function getHistorico(phone) {

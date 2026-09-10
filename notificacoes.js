@@ -7,8 +7,8 @@ const { logger } = require('./logger');
 const { sendText } = require('./uazapi');
 const { setConversa } = require('./firestore');
 const { buildPortalLink } = require('./portal-access');
+const { getSaldoComissao } = require('./pagamentos');
 
-const AGENT_PHONE  = process.env.AGENT_PHONE  || '5511961482602';
 const PORTAL_URL   = process.env.PORTAL_URL   || 'https://minhaimportacao-5442a.web.app/portal';
 
 function fmtCur(v) {
@@ -42,6 +42,14 @@ function buildMensagemStatus(status, nome, trav, com, phone) {
       `O valor da taxa de travessia é *${fmtCur(trav)}*.\n\n` +
       `Pague sua taxa de travessia pelo link abaixo:\n${portal}\n\n` +
       `A confirmação é automática. Não precisa enviar comprovante.`,
+    aguardando_pgto_comissao_antecipada:
+      `Olá ${nome}! O pagamento da travessia foi confirmado.
+Nesta viagem excepcional, será necessário antecipar *50% da comissão: ${fmtCur(com)}*.
+
+Pague pelo link abaixo:
+${portal}
+
+O restante será cobrado depois da chegada ao Brasil. A confirmação é automática.`,
     em_transito:
       `Olá ${nome}! Sua mercadoria está a caminho de São Paulo.\n\n` +
       `Acompanhe no portal: ${portal}`,
@@ -83,7 +91,9 @@ async function notificarTodosClientes(mensagem) {
     try {
       await sendText(phone, mensagem, true);
       await new Promise(r => setTimeout(r, 600)); // delay anti-spam
-    } catch (_) {}
+    } catch {
+      // A falha de um destinatário não interrompe os demais envios.
+    }
   }
 }
 
@@ -140,7 +150,9 @@ function setupListeners() {
     const { cliente, phone } = destino;
 
     const trav = pedidos.reduce((s, p) => s + (p.total_travessia_brl || 0), 0);
-    const com  = pedidos.reduce((s, p) => s + (p.total_comissao_brl  || 0), 0);
+    const com = status === 'aguardando_pgto_comissao_antecipada'
+      ? pedidos.reduce((s, p) => s + (Number(p.valor_comissao_antecipada_brl) || 0), 0)
+      : pedidos.reduce((s, p) => s + getSaldoComissao(p), 0);
 
     let msg = buildMensagemStatus(status, cliente.nome, trav, com, phone);
     if (!msg) { logger.info(`[notif] Status ${status} sem mensagem — ignorado`); return; }

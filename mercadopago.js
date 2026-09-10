@@ -47,6 +47,9 @@ function publicCharge(data) {
     qrCodeBase64: data.qr_code_base64 || '',
     ticketUrl: data.ticket_url || '',
     expiresAt: timestampMillis(data.expira_em) || null,
+    pedidoStatus: data.pedido_status || null,
+    comissaoAntecipadaPercentual: data.comissao_antecipada_percentual || null,
+    valorComissaoAntecipada: data.valor_comissao_antecipada_brl || null,
   };
 }
 
@@ -253,6 +256,9 @@ async function processOrderWebhook(orderId) {
   if (!result.ok) throw new Error(`Falha ao confirmar pedido: ${result.motivo}`);
   await chargeRef.set({
     status: 'pago',
+    pedido_status: result.novoStatus || null,
+    comissao_antecipada_percentual: result.comissaoAntecipadaPercentual || null,
+    valor_comissao_antecipada_brl: result.valorComissaoAntecipada || null,
     pago_em: Timestamp.now(),
     atualizado_em: Timestamp.now(),
   }, { merge: true });
@@ -384,7 +390,7 @@ function setupMercadoPago(app) {
       return;
     }
     const tipo = String(req.body?.tipo || '');
-    if (!['travessia', 'comissao'].includes(tipo)) {
+    if (!['travessia', 'comissao_antecipada', 'comissao'].includes(tipo)) {
       res.status(400).json({ ok: false, error: 'invalid_charge_type' });
       return;
     }

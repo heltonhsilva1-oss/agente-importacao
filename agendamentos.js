@@ -13,9 +13,9 @@ const {
   failScheduledMessage,
 } = require('./firestore');
 const { diasParaVencimento } = require('./mensalidade');
+const { getSaldoComissao } = require('./pagamentos');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
-const AGENT_PHONE    = process.env.AGENT_PHONE    || '5511961482602';
 const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
 const TZ = 'America/Sao_Paulo';
 
@@ -105,7 +105,7 @@ async function jobLembreteComissao() {
   for (const { pedido: p, cliente, phone } of itens) {
     if (diasNoStatus(p) < 1) continue;
     const msg =
-      `Olá ${cliente.nome}! Você tem a comissão pendente: *${fmtCur(p.total_comissao_brl || 0)}*\n\n` +
+      `Olá ${cliente.nome}! Você tem a comissão pendente: *${fmtCur(getSaldoComissao(p))}*\n\n` +
       `Pague até segunda-feira* para garantir o envio da sua mercadoria.\n` +
       `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
@@ -120,7 +120,7 @@ async function jobAlertaUrgenteComissao() {
   for (const { pedido: p, cliente, phone } of itens) {
     const msg =
       `ULTIMO DIA, ${cliente.nome}!*\n\n` +
-      `A comissão de *${fmtCur(p.total_comissao_brl || 0)}* precisa ser paga *hoje*.\n\n` +
+      `A comissão de *${fmtCur(getSaldoComissao(p))}* precisa ser paga *hoje*.\n\n` +
       `Pedidos sem pagamento hoje ficam para a próxima data de envio.\n` +
       `Pague pelo portal (confirmação automática): ${buildPortalLink(PORTAL_URL, phone)}`;
     await sendText(phone, msg, true);
@@ -134,7 +134,7 @@ async function jobCorteComissao() {
   const itens = await getPedidosComCliente('aguardando_pgto_comissao');
   if (!itens.length) return;
   const lista = itens.map(({ pedido: p, cliente }) =>
-    `• Pedido #${p.id} — ${cliente.nome} (${fmtCur(p.total_comissao_brl || 0)})`
+    `• Pedido #${p.id} — ${cliente.nome} (${fmtCur(getSaldoComissao(p))})`
   ).join('\n');
   await sendText(OPERATOR_PHONE,
     `Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
@@ -177,6 +177,7 @@ async function jobResumoMatinal() {
     `*Resumo do dia — ${new Date().toLocaleDateString('pt-BR')}*`,
     '',
     `- Ag. pgto. travessia: ${conta('aguardando_pgto_travessia')}`,
+    `- Ag. 50% comissão:    ${conta('aguardando_pgto_comissao_antecipada')}`,
     `- Ag. pgto. comissão:  ${conta('aguardando_pgto_comissao')}`,
     `- Ag. etiqueta:        ${conta('aguardando_etiqueta')}`,
     `- Ag. envio:           ${conta('aguardando_envio')}`,
@@ -194,6 +195,7 @@ async function jobAlertaPedidoParado() {
   const db = getFirestore();
   const limites = {
     aguardando_pgto_travessia: 5,
+    aguardando_pgto_comissao_antecipada: 5,
     aguardando_pgto_comissao:  5,
     aguardando_etiqueta:       3,
     em_transito:               12,

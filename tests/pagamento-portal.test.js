@@ -17,3 +17,11 @@ test('mensagem de comissão direciona o pagamento ao portal', () => {
   assert.match(message, /confirmação é automática/i);
   assert.doesNotMatch(message, /envie o comprovante|avise o pagamento/i);
 });
+
+test('mensagem do adiantamento explica a exceção e o saldo futuro', () => {
+  const message = buildMensagemStatus('aguardando_pgto_comissao_antecipada', 'Cliente', 0, 42.5, '5511999999999');
+  assert.match(message, /50% da comissão/i);
+  assert.match(message, /R\$\s*42,50/);
+  assert.match(message, /restante será cobrado depois/i);
+  assert.doesNotMatch(message, /comprovante/i);
+});
