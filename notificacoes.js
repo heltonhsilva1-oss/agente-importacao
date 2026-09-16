@@ -54,12 +54,7 @@ O restante será cobrado depois da chegada ao Brasil. A confirmação é automá
       `Olá ${nome}! Sua mercadoria está a caminho de São Paulo.\n\n` +
       `Acompanhe no portal: ${portal}`,
     chegou_sp:
-      `Olá ${nome}! Sua mercadoria chegou em São Paulo.\n\n` +
-      `*Para garantir o envio hoje*, você precisa concluir ainda hoje:\n` +
-      `1. Pagar a comissão de *${fmtCur(com)}* pelo portal\n` +
-      `2. Enviar a etiqueta de postagem\n\n` +
-      `Pedidos que não concluírem todos os passos hoje ficam para a próxima data de envio.\n\n` +
-      `Pague a comissão pelo link (confirmação automática): ${portal}`,
+      `Olá ${nome}! Sua mercadoria chegou em São Paulo.`,
     aguardando_pgto_comissao:
       `Olá ${nome}! Sua mercadoria chegou em SP.\n` +
       `O valor da comissão é *${fmtCur(com)}*.\n\n` +
