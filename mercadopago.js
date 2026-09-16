@@ -9,6 +9,7 @@ const { getCobrancaPendente } = require('./pagamentos');
 const { confirmarPagamentoPedido } = require('./firestore');
 const { verifyPortalSession } = require('./portal-access');
 const { allowOrigin, setCors } = require('./portal');
+const { reservarGrupo, confirmarGrupo, encerrarGrupo } = require('./pix-grupos');
 
 const API_BASE = 'https://api.mercadopago.com';
 const CHARGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +41,10 @@ function timestampMillis(value) {
 
 function publicCharge(data) {
   return {
+    chargeId: data.charge_id || null,
+    itens: data.itens || (data.pedido_id ? [{ pedido_id: data.pedido_id, valor: data.valor,
+      pedidoStatus: data.pedido_status || null, comissaoAntecipadaPercentual: data.comissao_antecipada_percentual || null,
+      valorComissaoAntecipada: data.valor_comissao_antecipada_brl || null }] : []),
     status: data.status,
     tipo: data.tipo,
     valor: data.valor,
@@ -137,6 +142,11 @@ async function reserveCharge({ pedido, cobranca, email }) {
   return db.runTransaction(async (transaction) => {
     const snap = await transaction.get(ref);
     const current = snap.exists ? snap.data() : null;
+    if (current?.grupo_id) {
+      const grupo = await transaction.get(db.collection('cobrancas_pix').doc(current.grupo_id));
+      if (!grupo.exists) throw new Error('payment_group_not_found');
+      return { kind: 'existing', data: grupo.data() };
+    }
     const expiresAt = timestampMillis(current?.expira_em);
     const creatingAt = timestampMillis(current?.criando_em);
 
@@ -167,8 +177,18 @@ async function reserveCharge({ pedido, cobranca, email }) {
   });
 }
 
-async function createPixCharge({ pedido, cobranca, email }) {
-  const reservation = await reserveCharge({ pedido, cobranca, email });
+async function createPixCharge({ pedido, cobranca, email, grupo }) {
+  let reservation;
+  if (grupo) {
+    const reservado = await reservarGrupo({ ...grupo, email });
+    const data = reservado.data || reservado.existing;
+    if (reservado.existing && !['criando', 'erro'].includes(data.status)) return publicCharge(data);
+    // Repetir uma requisição incerta usa a mesma chave: nunca gera outro Pix.
+    reservation = { ref: reservado.ref || getFirestore().collection('cobrancas_pix').doc(data.charge_id),
+      chargeId: data.charge_id, attempt: data.tentativa, idempotencyKey: data.idempotency_key };
+    cobranca = data;
+    email = data.email_pagador;
+  } else reservation = await reserveCharge({ pedido, cobranca, email });
   if (reservation.kind === 'existing') return publicCharge(reservation.data);
   if (reservation.kind === 'creating') {
     const error = new Error('charge_being_created');
@@ -200,7 +220,7 @@ async function createPixCharge({ pedido, cobranca, email }) {
     }
 
     const stored = {
-      status: pix.providerStatus === 'processed' ? 'pago' : 'pendente',
+      status: 'pendente',
       provider_status: pix.providerStatus,
       provider_order_id: pix.providerOrderId,
       external_reference: externalReference,
@@ -211,15 +231,24 @@ async function createPixCharge({ pedido, cobranca, email }) {
       atualizado_em: Timestamp.now(),
       criando_em: FieldValue.delete(),
     };
-    await reservation.ref.set(stored, { merge: true });
-    return publicCharge({ ...stored, tipo: cobranca.tipo, valor: Number(amount) });
+    await getFirestore().runTransaction(async tx => {
+      const snap = await tx.get(reservation.ref);
+      if (snap.data()?.status === 'pago') return;
+      tx.set(reservation.ref, stored, { merge: true });
+    });
+    if (pix.providerStatus === 'processed') await processOrderWebhook(pix.providerOrderId);
+    return publicCharge({ ...(await reservation.ref.get()).data(), charge_id: reservation.chargeId });
   } catch (error) {
-    await reservation.ref.set({
-      status: 'erro',
-      ultimo_erro: String(error.response?.data?.message || error.message).slice(0, 400),
-      atualizado_em: Timestamp.now(),
-      criando_em: FieldValue.delete(),
-    }, { merge: true });
+    await getFirestore().runTransaction(async tx => {
+      const snap = await tx.get(reservation.ref);
+      if (['pago', 'pendente'].includes(snap.data()?.status)) return;
+      tx.set(reservation.ref, {
+        status: 'erro',
+        ultimo_erro: String(error.response?.data?.message || error.message).slice(0, 400),
+        atualizado_em: Timestamp.now(),
+        criando_em: FieldValue.delete(),
+      }, { merge: true });
+    });
     throw error;
   }
 }
@@ -248,9 +277,15 @@ async function processOrderWebhook(orderId) {
   }, { merge: true });
 
   if (order.status !== 'processed' || order.status_detail !== 'accredited') {
+    if (['canceled', 'expired'].includes(order.status) && charge.status !== 'pago') {
+      if (charge.itens?.length) await encerrarGrupo(chargeRef, order.status);
+      else await chargeRef.update({ status: order.status });
+    }
     return { paid: false };
   }
   if (charge.status === 'pago') return { paid: true, duplicate: true };
+
+  if (Array.isArray(charge.itens) && charge.itens.length) return confirmarGrupo(chargeRef);
 
   const result = await confirmarPagamentoPedido(charge.pedido_id, charge.tipo);
   if (!result.ok) throw new Error(`Falha ao confirmar pedido: ${result.motivo}`);
@@ -291,7 +326,7 @@ async function reconcilePendingPixCharges({ loadPending, processOrder = processO
   let paid = 0;
   for (const charge of charges) {
     const expiresAt = timestampMillis(charge.expira_em);
-    if (!charge.provider_order_id || (expiresAt && expiresAt <= now)) continue;
+    if (!charge.provider_order_id || (!charge.itens?.length && expiresAt && expiresAt <= now)) continue;
     checked += 1;
     try {
       const result = await processOrder(charge.provider_order_id);
@@ -365,11 +400,23 @@ function setupMercadoPago(app) {
         res.status(409).json({ ok: false, error: 'no_pending_charge' });
         return;
       }
-      const charge = await createPixCharge({ pedido: found.data, cobranca, email });
+      let grupo;
+      if (Array.isArray(req.body?.pedidoIds)) {
+        const ids = req.body.pedidoIds;
+        if (!ids.length || ids.length > 100 || !ids.some(id => String(id) === String(found.data.id))) throw new Error('invalid_payment_group');
+        const encontrados = await Promise.all(ids.map(findPedido));
+        if (encontrados.some(p => !p || String(p.data.cliente_id) !== session.clienteId)) {
+          res.status(404).json({ ok: false, error: 'order_not_found' });
+          return;
+        }
+        grupo = { encontrados, ids, clienteId: session.clienteId };
+      }
+      const charge = await createPixCharge({ pedido: found.data, cobranca, email, grupo });
       res.json({ ok: true, charge });
     } catch (error) {
       logger.error('[mercadopago] Falha ao criar Pix:', JSON.stringify(error.response?.data || { message: error.message }));
-      res.status(error.status || 502).json({ ok: false, error: 'pix_creation_failed' });
+      const conflito = ['active_payment_conflict', 'payment_group_changed', 'no_pending_charge'].includes(error.message);
+      res.status(conflito ? 409 : error.status || 502).json({ ok: false, error: conflito ? error.message : 'pix_creation_failed' });
     }
   });
 
@@ -398,6 +445,13 @@ function setupMercadoPago(app) {
     if (!snap.exists) {
       res.status(404).json({ ok: false, error: 'charge_not_found' });
       return;
+    }
+    if (snap.data().grupo_id) {
+      snap = await getFirestore().collection('cobrancas_pix').doc(snap.data().grupo_id).get();
+      if (!snap.exists || snap.data().cliente_id !== session.clienteId) {
+        res.status(404).json({ ok: false, error: 'charge_not_found' });
+        return;
+      }
     }
     snap = await refreshPendingCharge(snap);
     res.json({ ok: true, charge: publicCharge(snap.data()) });
