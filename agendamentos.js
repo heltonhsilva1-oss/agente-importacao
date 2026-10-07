@@ -4,7 +4,7 @@
 const cron = require('node-cron');
 const { getFirestore } = require('firebase-admin/firestore');
 const { logger } = require('./logger');
-const { sendText } = require('./uazapi');
+const { sendText, updateGroupParticipants } = require('./uazapi');
 const { buildPortalLink } = require('./portal-access');
 const {
   getMensagensProcessaveis,
@@ -14,6 +14,7 @@ const {
 } = require('./firestore');
 const { chaveDataSaoPaulo, diasParaVencimento, statusMensalidadeEfetivo } = require('./mensalidade');
 const { getSaldoComissao } = require('./pagamentos');
+const { processOrderWebhook, vipChargeId } = require('./mercadopago');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
@@ -159,13 +160,19 @@ async function jobAvisoVip() {
   const dataHoje = chaveDataSaoPaulo();
   for (const doc of snap.docs) {
     const c = doc.data();
-    if (c.ativo === false || statusMensalidadeEfetivo(c) === 'paga') continue;
+    if (c.ativo === false || c.status_vip === 'removido_inadimplencia' || statusMensalidadeEfetivo(c) === 'paga') continue;
     const diaVenc = parseInt(c.data_vencimento_mensalidade, 10);
     if (isNaN(diaVenc)) continue;
     const diffDias = diasParaVencimento(diaVenc);
     const phone = clienteToWhatsapp(c);
     if (!phone) continue;
 
+    // Uma falha de rede no quinto dia é tentada novamente nos dias seguintes,
+    // sem repetir os avisos ao cliente.
+    if (diffDias < -5) {
+      await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
+      continue;
+    }
     if (![3, 0, -1, -2, -3, -4, -5].includes(diffDias)) continue;
     const avisoRef = db.collection('avisos_mensalidade_vip').doc(`${doc.id}_${dataHoje}`);
     try {
@@ -178,11 +185,43 @@ async function jobAvisoVip() {
       await sendText(phone, mensagemMensalidadeVip(c, diffDias, valor), true);
       await avisoRef.update({ status: 'enviado', enviado_em: new Date() });
       logger.info(`[agend] Aviso VIP (${diffDias}) → ${c.nome}`);
+
+      // Depois do quinto dia, consulta o Mercado Pago uma última vez antes de
+      // retirar. Assim um webhook atrasado nunca causa remoção indevida.
+      if (diffDias === -5) await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
     } catch (error) {
       await avisoRef.delete().catch(() => {});
       throw error;
     }
   }
+}
+
+async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
+  const competencia = dataHoje.slice(0, 7);
+  const chargeRef = db.collection('cobrancas_pix').doc(vipChargeId(doc.id, competencia));
+  const chargeSnap = await chargeRef.get();
+  if (chargeSnap.exists && chargeSnap.data().provider_order_id) {
+    await processOrderWebhook(chargeSnap.data().provider_order_id);
+  }
+  const [clienteAtual, chargeAtual] = await Promise.all([doc.ref.get(), chargeRef.get()]);
+  if (statusMensalidadeEfetivo(clienteAtual.data()) === 'paga' || chargeAtual.data()?.status === 'pago') return;
+
+  const groupJid = String(process.env.VIP_GROUP_JID || '120363427841192975@g.us').trim();
+  if (!groupJid) {
+    await sendText(OPERATOR_PHONE, `Não foi possível remover ${cliente.nome} do VIP: configure VIP_GROUP_JID.`, true);
+    return;
+  }
+  await updateGroupParticipants(groupJid, 'remove', [phone]);
+  await doc.ref.set({
+    status_vip: 'removido_inadimplencia', removido_grupo_vip_em: new Date(),
+    removido_grupo_vip_competencia: competencia,
+  }, { merge: true });
+  await db.collection('eventos_mensalidade_vip').add({
+    cliente_doc_id: doc.id, cliente_id: cliente.id ?? doc.id, cliente_nome: cliente.nome || '',
+    telefone: phone, tipo: 'remocao_inadimplencia', competencia, criado_em: new Date(),
+  });
+  await sendText(phone, 'Como a mensalidade permaneceu em aberto por 5 dias, sua participação no grupo VIP foi encerrada. Se quiser retornar, responda *PAGAR*.', true);
+  await sendText(OPERATOR_PHONE, `🚪 ${cliente.nome} (${phone}) foi removido automaticamente do Grupo VIP após 5 dias sem pagamento.`, true);
 }
 
 // ── Resumo matinal para o operador — todo dia às 8h ──────────────────────────
@@ -303,4 +342,4 @@ function setupAgendamentos() {
   logger.info('[agend] Cron jobs registrados');
 }
 
-module.exports = { setupAgendamentos, jobMensagensAgendadas, mensagemMensalidadeVip };
+module.exports = { setupAgendamentos, jobMensagensAgendadas, mensagemMensalidadeVip, removerVipInadimplente };

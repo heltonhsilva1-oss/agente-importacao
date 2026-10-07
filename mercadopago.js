@@ -10,6 +10,8 @@ const { confirmarPagamentoPedido } = require('./firestore');
 const { verifyPortalSession } = require('./portal-access');
 const { allowOrigin, setCors } = require('./portal');
 const { reservarGrupo, confirmarGrupo, encerrarGrupo } = require('./pix-grupos');
+const { sendText } = require('./uazapi');
+const { chaveDataSaoPaulo } = require('./mensalidade');
 
 const API_BASE = 'https://api.mercadopago.com';
 const CHARGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -131,6 +133,81 @@ function parseExternalReference(value) {
   // Compatibilidade com orders criadas antes da correção.
   const legacy = /^kidex_pix\|([^|]+)\|(\d+)$/.exec(reference);
   return legacy ? { chargeId: legacy[1], attempt: Number(legacy[2]) } : null;
+}
+
+function vipChargeId(clienteId, competencia = chaveDataSaoPaulo().slice(0, 7)) {
+  const safeId = String(clienteId).replace(/[^A-Za-z0-9_-]/g, '_');
+  return `vip_${safeId}_${competencia}`;
+}
+
+function vipPayerEmail(cliente) {
+  const configured = String(cliente?.email || process.env.MERCADOPAGO_PAYER_EMAIL || '').trim().toLowerCase();
+  if (isValidEmail(configured)) return configured;
+  // A API de Orders exige um e-mail sintaticamente válido para o Pix. O
+  // identificador técnico evita bloquear clientes cujo cadastro é só telefone.
+  const safeId = String(cliente?.id || 'vip').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'vip';
+  return `${safeId}@cliente.kidex.com.br`;
+}
+
+async function createVipPixCharge({ clienteDocId, cliente, valor, competencia = chaveDataSaoPaulo().slice(0, 7) }) {
+  const amount = Number(valor);
+  if (!Number.isFinite(amount) || amount < 0.01) throw new Error('vip_amount_invalid');
+  const email = vipPayerEmail(cliente);
+  const db = getFirestore();
+  const chargeId = vipChargeId(clienteDocId, competencia);
+  const ref = db.collection('cobrancas_pix').doc(chargeId);
+  const existing = await ref.get();
+  const current = existing.exists ? existing.data() : null;
+  if (current?.status === 'pago') return publicCharge({ ...current, charge_id: chargeId });
+  if (current?.status === 'pendente' && timestampMillis(current.expira_em) > Date.now() && current.qr_code) {
+    return publicCharge({ ...current, charge_id: chargeId });
+  }
+
+  const attempt = Number(current?.tentativa || 0) + 1;
+  const idempotencyKey = crypto.randomUUID();
+  await ref.set({
+    charge_id: chargeId,
+    tipo: 'mensalidade_vip',
+    cliente_doc_id: String(clienteDocId),
+    cliente_id: String(cliente?.id ?? clienteDocId),
+    cliente_nome: String(cliente?.nome || ''),
+    cliente_phone: String(cliente?.telefone || '').replace(/\D/g, ''),
+    competencia,
+    valor: Number(amount.toFixed(2)),
+    email_pagador: email,
+    tentativa: attempt,
+    idempotency_key: idempotencyKey,
+    status: 'criando',
+    criando_em: Timestamp.now(),
+    atualizado_em: Timestamp.now(),
+  }, { merge: true });
+
+  const externalReference = buildExternalReference(chargeId, attempt);
+  try {
+    const orderPayload = {
+      type: 'online', total_amount: amount.toFixed(2), external_reference: externalReference,
+      processing_mode: 'automatic',
+      transactions: { payments: [{ amount: amount.toFixed(2), payment_method: {
+        id: 'pix', type: 'bank_transfer',
+      }, expiration_time: 'P1D' }] },
+    };
+    orderPayload.payer = { email };
+    const order = await mercadoPagoRequest('post', '/v1/orders', orderPayload, { idempotencyKey });
+    const pix = extractPix(order);
+    if (!pix.providerOrderId || (!pix.qrCode && !pix.ticketUrl)) throw new Error('Mercado Pago nao retornou dados do Pix');
+    await ref.set({
+      status: 'pendente', provider_status: pix.providerStatus, provider_order_id: pix.providerOrderId,
+      external_reference: externalReference, qr_code: pix.qrCode, qr_code_base64: pix.qrCodeBase64,
+      ticket_url: pix.ticketUrl, expira_em: Timestamp.fromMillis(Date.now() + CHARGE_TTL_MS),
+      atualizado_em: Timestamp.now(), criando_em: FieldValue.delete(),
+    }, { merge: true });
+    if (pix.providerStatus === 'processed') await processOrderWebhook(pix.providerOrderId);
+    return publicCharge({ ...(await ref.get()).data(), charge_id: chargeId });
+  } catch (error) {
+    await ref.set({ status: 'erro', ultimo_erro: String(error.response?.data?.message || error.message).slice(0, 400),
+      atualizado_em: Timestamp.now(), criando_em: FieldValue.delete() }, { merge: true });
+    throw error;
+  }
 }
 
 async function reserveCharge({ pedido, cobranca, email }) {
@@ -284,6 +361,36 @@ async function processOrderWebhook(orderId) {
     return { paid: false };
   }
   if (charge.status === 'pago') return { paid: true, duplicate: true };
+
+  if (charge.tipo === 'mensalidade_vip') {
+    const paidDate = chaveDataSaoPaulo();
+    const clienteRef = getFirestore().collection('clientes').doc(String(charge.cliente_doc_id));
+    const clienteAntes = await clienteRef.get();
+    await getFirestore().runTransaction(async tx => {
+      const freshCharge = await tx.get(chargeRef);
+      if (freshCharge.data()?.status === 'pago') return;
+      tx.set(chargeRef, { status: 'pago', pago_em: Timestamp.now(), atualizado_em: Timestamp.now() }, { merge: true });
+      tx.set(clienteRef, {
+        status_mensalidade: 'paga', data_pagamento_mensalidade: paidDate,
+        mensalidade_competencia_paga: charge.competencia, mensalidade_charge_id: chargeRef.id,
+        atualizado_em: FieldValue.serverTimestamp(),
+      }, { merge: true });
+    });
+    const phone = String(charge.cliente_phone || '').replace(/\D/g, '');
+    if (clienteAntes.data()?.status_vip === 'removido_inadimplencia' && phone) {
+      try {
+        const { updateGroupParticipants } = require('./uazapi');
+        await updateGroupParticipants(process.env.VIP_GROUP_JID || '120363427841192975@g.us', 'add', [phone]);
+        await clienteRef.set({ status_vip: 'ativo', reincluido_grupo_vip_em: Timestamp.now() }, { merge: true });
+      } catch (error) {
+        logger.error('[mercadopago] Pagamento confirmado, mas reinclusão no VIP falhou:', error.message);
+        await sendText(process.env.OPERATOR_PHONE || '5511995715042',
+          `Pagamento VIP de ${charge.cliente_nome} confirmado, mas a reinclusão no grupo falhou: ${error.message}`, true);
+      }
+    }
+    if (phone) await sendText(phone, `Pagamento da mensalidade VIP de *${charge.competencia}* confirmado automaticamente. Obrigado!`, true);
+    return { paid: true, tipo: 'mensalidade_vip' };
+  }
 
   if (Array.isArray(charge.itens) && charge.itens.length) return confirmarGrupo(chargeRef);
 
@@ -498,6 +605,8 @@ module.exports = {
   isValidEmail,
   buildExternalReference,
   parseExternalReference,
+  vipChargeId,
+  createVipPixCharge,
   refreshPendingCharge,
   reconcilePendingPixCharges,
 };

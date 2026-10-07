@@ -13,6 +13,7 @@ const {
   parseExternalReference,
   refreshPendingCharge,
   reconcilePendingPixCharges,
+  vipChargeId,
 } = require('../mercadopago');
 const { issuePortalSession, verifyPortalSession } = require('../portal-access');
 
@@ -95,6 +96,11 @@ test('continua reconhecendo external_reference do formato anterior', () => {
     attempt: 4,
   });
   assert.equal(parseExternalReference('referencia-invalida'), null);
+});
+
+test('gera uma cobrança VIP determinística por cliente e competência', () => {
+  assert.equal(vipChargeId('cliente/38', '2026-10'), 'vip_cliente_38_2026-10');
+  assert.equal(vipChargeId('cliente/38', '2026-11'), 'vip_cliente_38_2026-11');
 });
 
 test('consulta diretamente a order quando a cobrança ainda está pendente', async () => {

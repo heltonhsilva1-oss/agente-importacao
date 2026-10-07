@@ -99,4 +99,30 @@ async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = fal
   }
 }
 
-module.exports = { sendText, sendMedia, isHoraComercial };
+// Gerencia participantes do grupo VIP. O número conectado precisa ser
+// administrador do grupo na própria conta do WhatsApp.
+async function updateGroupParticipants(groupJid, action, participants) {
+  const url = baseUrl();
+  if (!url) throw new Error('UAZAPI_SERVER_URL não configurado');
+  const allowed = ['add', 'remove', 'promote', 'demote', 'approve', 'reject'];
+  if (!allowed.includes(action)) throw new Error('Ação de grupo inválida');
+  const group = String(groupJid || '').trim();
+  if (!group.endsWith('@g.us')) throw new Error('VIP_GROUP_JID inválido');
+  const numbers = [...new Set((participants || []).map(p => String(p).replace(/\D/g, '')).filter(Boolean))];
+  if (!numbers.length) throw new Error('Nenhum participante informado');
+
+  try {
+    const response = await axios.post(
+      `${url}/group/updateParticipants`,
+      { groupjid: group, action, participants: numbers },
+      { headers: headers(), timeout: 20000 }
+    );
+    logger.info(`[uazapi] Grupo ${action}: ${numbers.join(', ')}`);
+    return response.data;
+  } catch (err) {
+    logger.error(`[uazapi] Erro ao atualizar grupo (${action}):`, err.response?.data || err.message);
+    throw err;
+  }
+}
+
+module.exports = { sendText, sendMedia, updateGroupParticipants, isHoraComercial };

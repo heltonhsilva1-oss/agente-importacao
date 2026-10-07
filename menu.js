@@ -827,15 +827,27 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     if (respostaVip === 'PAGAR' || respostaVip === '1') {
       const config = await getConfiguracoes();
       const valor = Number(config.valorMensalidadeVIP || 0);
-      const linhas = [
-        'Certo! Para continuar no grupo VIP, faça o pagamento da mensalidade.',
-        valor > 0 ? `Valor: *${fmtCur(valor)}*` : null,
-        config.pixChave ? `Chave Pix: *${config.pixChave}*` : 'O operador enviará os dados de pagamento em seguida.',
-        'Após o pagamento, aguarde a confirmação do operador.',
-      ].filter(Boolean);
-      await sendText(normalPhone, linhas.join('\n\n'), true);
-      await sendText(OPERATOR_PHONE,
-        `💳 ${clienteCadastrado.nome} (${normalPhone}) escolheu *PAGAR* a mensalidade VIP vencida.`, true);
+      try {
+        const { getFirestore } = require('firebase-admin/firestore');
+        const { createVipPixCharge } = require('./mercadopago');
+        const db = getFirestore();
+        const clienteSnap = await db.collection('clientes').where('id', '==', Number(clienteCadastrado.id)).limit(1).get();
+        if (clienteSnap.empty) throw new Error('vip_client_not_found');
+        const charge = await createVipPixCharge({ clienteDocId: clienteSnap.docs[0].id, cliente: clienteSnap.docs[0].data(), valor });
+        const linhas = [
+          `Certo! Sua mensalidade VIP é de *${fmtCur(valor)}*.`,
+          charge.qrCode ? `*Pix Copia e Cola:*\n${charge.qrCode}` : null,
+          charge.ticketUrl ? `*Abrir pagamento:* ${charge.ticketUrl}` : null,
+          'A confirmação será automática após o pagamento.',
+        ].filter(Boolean);
+        await sendText(normalPhone, linhas.join('\n\n'), true);
+        await sendText(OPERATOR_PHONE,
+          `💳 ${clienteCadastrado.nome} (${normalPhone}) escolheu *PAGAR* e recebeu a cobrança automática da mensalidade VIP.`, true);
+      } catch (error) {
+        logger.error('[menu] Falha ao gerar mensalidade VIP:', error.message);
+        await sendText(normalPhone, 'Não consegui gerar a cobrança agora. O responsável já foi avisado e vai ajudar você.', true);
+        await sendText(OPERATOR_PHONE, `Falha ao gerar cobrança VIP para ${clienteCadastrado.nome} (${normalPhone}): ${error.message}`, true);
+      }
       return;
     }
     if (respostaVip === 'SAIR' || respostaVip === '2') {
@@ -848,9 +860,16 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
           solicitou_saida_vip_em: FieldValue.serverTimestamp(),
         });
       }
-      await sendText(normalPhone, 'Recebi sua solicitação para sair do grupo VIP. O responsável foi avisado e fará a atualização do seu cadastro.', true);
-      await sendText(OPERATOR_PHONE,
-        `🚪 ${clienteCadastrado.nome} (${normalPhone}) solicitou *SAIR DO GRUPO VIP*. Atualize o cadastro do cliente.`, true);
+      try {
+        const { updateGroupParticipants } = require('./uazapi');
+        await updateGroupParticipants(process.env.VIP_GROUP_JID || '120363427841192975@g.us', 'remove', [normalPhone]);
+        await sendText(normalPhone, 'Sua saída do Grupo VIP foi concluída.', true);
+        await sendText(OPERATOR_PHONE, `🚪 ${clienteCadastrado.nome} (${normalPhone}) solicitou *SAIR DO GRUPO VIP* e foi removido automaticamente.`, true);
+      } catch (error) {
+        logger.error('[menu] Falha ao remover do VIP:', error.message);
+        await sendText(normalPhone, 'Recebi sua solicitação de saída. O responsável foi avisado para concluir a remoção.', true);
+        await sendText(OPERATOR_PHONE, `🚪 ${clienteCadastrado.nome} solicitou SAIR, mas a remoção automática falhou: ${error.message}`, true);
+      }
       return;
     }
     await sendText(normalPhone,
