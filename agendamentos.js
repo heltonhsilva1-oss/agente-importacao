@@ -167,31 +167,63 @@ async function jobAvisoVip() {
     const phone = clienteToWhatsapp(c);
     if (!phone) continue;
 
-    // Uma falha de rede no quinto dia é tentada novamente nos dias seguintes,
-    // sem repetir os avisos ao cliente.
-    if (diffDias < -5) {
-      await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
-      continue;
-    }
-    if (![3, 0, -1, -2, -3, -4, -5].includes(diffDias)) continue;
+    let numeroAviso = null;
+    let cicloRef = null;
+    if (diffDias < 0) {
+      const competencia = dataHoje.slice(0, 7);
+      cicloRef = db.collection('ciclos_mensalidade_vip').doc(`${doc.id}_${competencia}`);
+      numeroAviso = await db.runTransaction(async tx => {
+        const cicloSnap = await tx.get(cicloRef);
+        const ciclo = cicloSnap.exists ? cicloSnap.data() : {};
+        if (ciclo.status === 'removido' || ciclo.ultima_data_aviso === dataHoje) return null;
+        const enviados = Number(ciclo.avisos_enviados || 0);
+        if (enviados >= 5) return 6; // tenta novamente a remoção que falhou
+        tx.set(cicloRef, {
+          cliente_doc_id: doc.id, cliente_id: c.id ?? doc.id, competencia,
+          iniciado_em: ciclo.iniciado_em || new Date(), ultima_data_aviso: dataHoje,
+          avisos_enviados: enviados + 1, status: 'cobrando', atualizado_em: new Date(),
+        }, { merge: true });
+        return enviados + 1;
+      });
+      if (numeroAviso === null) continue;
+      if (numeroAviso > 5) {
+        await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
+        continue;
+      }
+    } else if (![3, 0].includes(diffDias)) continue;
+
     const avisoRef = db.collection('avisos_mensalidade_vip').doc(`${doc.id}_${dataHoje}`);
     try {
       await avisoRef.create({ cliente_id: c.id ?? doc.id, data: dataHoje, tipo: diffDias < 0 ? 'vencida' : 'preventivo', criado_em: new Date() });
     } catch (error) {
       if (error.code === 6 || error.code === 'already-exists') continue;
-      throw error;
+      logger.error(`[agend] Falha na cobrança VIP de ${c.nome}: ${error.message}`);
+      continue;
     }
     try {
       await sendText(phone, mensagemMensalidadeVip(c, diffDias, valor), true);
       await avisoRef.update({ status: 'enviado', enviado_em: new Date() });
-      logger.info(`[agend] Aviso VIP (${diffDias}) → ${c.nome}`);
+      logger.info(`[agend] Aviso VIP (${numeroAviso || diffDias}) → ${c.nome}`);
 
       // Depois do quinto dia, consulta o Mercado Pago uma última vez antes de
       // retirar. Assim um webhook atrasado nunca causa remoção indevida.
-      if (diffDias === -5) await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
+      if (numeroAviso === 5) await removerVipInadimplente({ db, doc, cliente: c, phone, dataHoje });
     } catch (error) {
       await avisoRef.delete().catch(() => {});
-      throw error;
+      if (cicloRef && numeroAviso >= 1 && numeroAviso <= 5) {
+        await db.runTransaction(async tx => {
+          const snapCiclo = await tx.get(cicloRef);
+          const ciclo = snapCiclo.data();
+          if (ciclo?.ultima_data_aviso === dataHoje && Number(ciclo.avisos_enviados) === numeroAviso) {
+            tx.set(cicloRef, {
+              avisos_enviados: Math.max(0, numeroAviso - 1), ultima_data_aviso: null,
+              ultimo_erro: String(error.message || error).slice(0, 300), atualizado_em: new Date(),
+            }, { merge: true });
+          }
+        }).catch(() => {});
+      }
+      logger.error(`[agend] Falha na cobrança VIP de ${c.nome}: ${error.message}`);
+      continue;
     }
   }
 }
@@ -215,6 +247,9 @@ async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
   await doc.ref.set({
     status_vip: 'removido_inadimplencia', removido_grupo_vip_em: new Date(),
     removido_grupo_vip_competencia: competencia,
+  }, { merge: true });
+  await db.collection('ciclos_mensalidade_vip').doc(`${doc.id}_${competencia}`).set({
+    status: 'removido', removido_em: new Date(), atualizado_em: new Date(),
   }, { merge: true });
   await db.collection('eventos_mensalidade_vip').add({
     cliente_doc_id: doc.id, cliente_id: cliente.id ?? doc.id, cliente_nome: cliente.nome || '',
@@ -339,7 +374,12 @@ function setupAgendamentos() {
   // Segunda — corte de comissão ao meio-dia
   cron.schedule('0 12 * * 1',  () => r(jobCorteComissao),            { timezone: TZ });
 
+  // Também executa ao publicar/reiniciar. A reserva diária no Firestore torna
+  // a execução idempotente e permite iniciar hoje os vencidos já existentes.
+  const vipStartup = setTimeout(() => r(jobAvisoVip), 5000);
+  vipStartup.unref?.();
+
   logger.info('[agend] Cron jobs registrados');
 }
 
-module.exports = { setupAgendamentos, jobMensagensAgendadas, mensagemMensalidadeVip, removerVipInadimplente };
+module.exports = { setupAgendamentos, jobAvisoVip, jobMensagensAgendadas, mensagemMensalidadeVip, removerVipInadimplente };
