@@ -12,7 +12,7 @@ const {
   completeScheduledMessage,
   failScheduledMessage,
 } = require('./firestore');
-const { diasParaVencimento } = require('./mensalidade');
+const { chaveDataSaoPaulo, diasParaVencimento, statusMensalidadeEfetivo } = require('./mensalidade');
 const { getSaldoComissao } = require('./pagamentos');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
@@ -140,28 +140,47 @@ async function jobCorteComissao() {
     `Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
 }
 
-// ── Aviso de VIP vencendo (3 dias antes) e vencida (no dia) — todo dia às 9h ─
+function mensagemMensalidadeVip(c, diffDias, valor) {
+  const valorTexto = Number(valor) > 0 ? ` no valor de *${fmtCur(valor)}*` : '';
+  if (diffDias === 3) return `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias${valorTexto}.\n\nResponda *PAGAR* para receber os dados de pagamento ou *SAIR* se não quiser continuar no grupo VIP.`;
+  if (diffDias === 0) return `Olá ${c.nome}! Sua mensalidade VIP vence hoje${valorTexto}.\n\nResponda *PAGAR* para receber os dados de pagamento ou *SAIR* se não quiser continuar no grupo VIP.`;
+  const atraso = Math.abs(diffDias);
+  return `Olá ${c.nome}! Sua mensalidade VIP está vencida há ${atraso} dia${atraso === 1 ? '' : 's'}${valorTexto}.\n\nResponda *PAGAR* para regularizar ou *SAIR* se não quiser continuar no grupo VIP.`;
+}
+
+// ── Aviso VIP: 3 dias antes, no vencimento e nos 5 dias seguintes ─────────
 async function jobAvisoVip() {
   logger.info('[agend] Aviso de VIP vencendo/vencida');
   const db = getFirestore();
-  const snap = await db.collection('clientes').get();
+  const [snap, configSnap] = await Promise.all([
+    db.collection('clientes').get(), db.collection('configuracoes').doc('global').get(),
+  ]);
+  const valor = configSnap.exists ? configSnap.data().valorMensalidadeVIP : 0;
+  const dataHoje = chaveDataSaoPaulo();
   for (const doc of snap.docs) {
     const c = doc.data();
-    if (c.status_mensalidade === 'paga') continue;
+    if (c.ativo === false || statusMensalidadeEfetivo(c) === 'paga') continue;
     const diaVenc = parseInt(c.data_vencimento_mensalidade, 10);
     if (isNaN(diaVenc)) continue;
     const diffDias = diasParaVencimento(diaVenc);
     const phone = clienteToWhatsapp(c);
     if (!phone) continue;
 
-    if (diffDias === 3) {
-      await sendText(phone,
-        `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias. Entre em contato para renovar.`, true);
-      logger.info(`[agend] Aviso VIP (3 dias) → ${c.nome}`);
-    } else if (diffDias === 0) {
-      await sendText(phone,
-        `Olá ${c.nome}! Sua mensalidade VIP vence hoje. Entre em contato para renovar e continuar com o atendimento.`, true);
-      logger.info(`[agend] Aviso VIP (vence hoje) → ${c.nome}`);
+    if (![3, 0, -1, -2, -3, -4, -5].includes(diffDias)) continue;
+    const avisoRef = db.collection('avisos_mensalidade_vip').doc(`${doc.id}_${dataHoje}`);
+    try {
+      await avisoRef.create({ cliente_id: c.id ?? doc.id, data: dataHoje, tipo: diffDias < 0 ? 'vencida' : 'preventivo', criado_em: new Date() });
+    } catch (error) {
+      if (error.code === 6 || error.code === 'already-exists') continue;
+      throw error;
+    }
+    try {
+      await sendText(phone, mensagemMensalidadeVip(c, diffDias, valor), true);
+      await avisoRef.update({ status: 'enviado', enviado_em: new Date() });
+      logger.info(`[agend] Aviso VIP (${diffDias}) → ${c.nome}`);
+    } catch (error) {
+      await avisoRef.delete().catch(() => {});
+      throw error;
     }
   }
 }
@@ -284,4 +303,4 @@ function setupAgendamentos() {
   logger.info('[agend] Cron jobs registrados');
 }
 
-module.exports = { setupAgendamentos, jobMensagensAgendadas };
+module.exports = { setupAgendamentos, jobMensagensAgendadas, mensagemMensalidadeVip };

@@ -13,9 +13,15 @@ function hojeSaoPauloYMD(instante = new Date()) {
 
 // Dias até o vencimento deste mês (negativo = já venceu).
 function diasParaVencimento(diaVencimento, hoje = hojeSaoPauloYMD()) {
-  const vencimentoUtc = Date.UTC(hoje.year, hoje.month - 1, diaVencimento);
+  const ultimoDiaMes = new Date(Date.UTC(hoje.year, hoje.month, 0)).getUTCDate();
+  const diaValido = Math.min(Math.max(Number(diaVencimento) || 1, 1), ultimoDiaMes);
+  const vencimentoUtc = Date.UTC(hoje.year, hoje.month - 1, diaValido);
   const hojeUtc = Date.UTC(hoje.year, hoje.month - 1, hoje.day);
   return Math.round((vencimentoUtc - hojeUtc) / (24 * 60 * 60 * 1000));
+}
+
+function chaveDataSaoPaulo(hoje = hojeSaoPauloYMD()) {
+  return `${hoje.year}-${String(hoje.month).padStart(2, '0')}-${String(hoje.day).padStart(2, '0')}`;
 }
 
 // Status real da mensalidade, comparando a data de hoje com o dia de
@@ -33,4 +39,4 @@ function statusMensalidadeEfetivo(cliente, hoje = hojeSaoPauloYMD()) {
   return diasParaVencimento(dia, hoje) < 0 ? 'vencida' : 'pendente';
 }
 
-module.exports = { hojeSaoPauloYMD, diasParaVencimento, statusMensalidadeEfetivo };
+module.exports = { hojeSaoPauloYMD, diasParaVencimento, chaveDataSaoPaulo, statusMensalidadeEfetivo };

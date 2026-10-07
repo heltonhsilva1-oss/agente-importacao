@@ -822,7 +822,39 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   // Tem prioridade sobre tudo, inclusive o comando global "menu".
   if (statusMensalidadeEfetivo(clienteCadastrado) === 'vencida') {
     logger.info(`[menu] Bloqueado por mensalidade vencida: ${normalPhone}`);
-    await sendText(normalPhone, 'Cliente não ativo. Mensalidade do VIP pendente.', true);
+    const respostaVip = String(body || '').trim().toUpperCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (respostaVip === 'PAGAR' || respostaVip === '1') {
+      const config = await getConfiguracoes();
+      const valor = Number(config.valorMensalidadeVIP || 0);
+      const linhas = [
+        'Certo! Para continuar no grupo VIP, faça o pagamento da mensalidade.',
+        valor > 0 ? `Valor: *${fmtCur(valor)}*` : null,
+        config.pixChave ? `Chave Pix: *${config.pixChave}*` : 'O operador enviará os dados de pagamento em seguida.',
+        'Após o pagamento, aguarde a confirmação do operador.',
+      ].filter(Boolean);
+      await sendText(normalPhone, linhas.join('\n\n'), true);
+      await sendText(OPERATOR_PHONE,
+        `💳 ${clienteCadastrado.nome} (${normalPhone}) escolheu *PAGAR* a mensalidade VIP vencida.`, true);
+      return;
+    }
+    if (respostaVip === 'SAIR' || respostaVip === '2') {
+      const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+      const db = getFirestore();
+      const clienteSnap = await db.collection('clientes').where('id', '==', Number(clienteCadastrado.id)).limit(1).get();
+      if (!clienteSnap.empty) {
+        await clienteSnap.docs[0].ref.update({
+          solicitou_saida_vip: true,
+          solicitou_saida_vip_em: FieldValue.serverTimestamp(),
+        });
+      }
+      await sendText(normalPhone, 'Recebi sua solicitação para sair do grupo VIP. O responsável foi avisado e fará a atualização do seu cadastro.', true);
+      await sendText(OPERATOR_PHONE,
+        `🚪 ${clienteCadastrado.nome} (${normalPhone}) solicitou *SAIR DO GRUPO VIP*. Atualize o cadastro do cliente.`, true);
+      return;
+    }
+    await sendText(normalPhone,
+      'Sua mensalidade VIP está vencida.\n\nResponda:\n*1 ou PAGAR* — receber os dados de pagamento\n*2 ou SAIR* — solicitar a saída do grupo VIP', true);
     return;
   }
 
