@@ -8,10 +8,13 @@ const { readFileSync } = require('node:fs');
 
 test('cobra durante os cinco dias posteriores ao vencimento com PAGAR e SAIR', () => {
   for (const atraso of [-1, -2, -3, -4, -5]) {
-    const mensagem = mensagemMensalidadeVip({ nome: 'Cliente' }, atraso, 50);
+    const mensagem = mensagemMensalidadeVip({ nome: 'Cliente', data_vencimento_mensalidade: 12 }, atraso, 50, Math.abs(atraso));
     assert.match(mensagem, /PAGAR/);
     assert.match(mensagem, /SAIR/);
     assert.match(mensagem, /R\$\s*50,00/);
+    assert.match(mensagem, /venceu no dia \*12\*/);
+    assert.match(mensagem, new RegExp(`aviso \\*${Math.abs(atraso)} de 5\\*`));
+    assert.doesNotMatch(mensagem, /vencida há/);
   }
 });
 

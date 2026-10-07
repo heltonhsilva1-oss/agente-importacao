@@ -141,12 +141,13 @@ async function jobCorteComissao() {
     `Sem pagamento de comissão — ficam para a próxima data:*\n\n${lista}`, true);
 }
 
-function mensagemMensalidadeVip(c, diffDias, valor) {
+function mensagemMensalidadeVip(c, diffDias, valor, numeroAviso = null) {
   const valorTexto = Number(valor) > 0 ? ` no valor de *${fmtCur(valor)}*` : '';
   if (diffDias === 3) return `Olá ${c.nome}! Sua mensalidade VIP vence em 3 dias${valorTexto}.\n\nResponda *PAGAR* para receber os dados de pagamento ou *SAIR* se não quiser continuar no grupo VIP.`;
   if (diffDias === 0) return `Olá ${c.nome}! Sua mensalidade VIP vence hoje${valorTexto}.\n\nResponda *PAGAR* para receber os dados de pagamento ou *SAIR* se não quiser continuar no grupo VIP.`;
-  const atraso = Math.abs(diffDias);
-  return `Olá ${c.nome}! Sua mensalidade VIP está vencida há ${atraso} dia${atraso === 1 ? '' : 's'}${valorTexto}.\n\nResponda *PAGAR* para regularizar ou *SAIR* se não quiser continuar no grupo VIP.`;
+  const vencimento = c.data_vencimento_mensalidade ? ` venceu no dia *${c.data_vencimento_mensalidade}*` : ' está vencida';
+  const ciclo = numeroAviso ? `\nEste é o aviso *${numeroAviso} de 5* do ciclo iniciado hoje.` : '';
+  return `Olá ${c.nome}! Sua mensalidade VIP${vencimento}${valorTexto}.${ciclo}\n\nResponda *PAGAR* para regularizar ou *SAIR* se não quiser continuar no grupo VIP.`;
 }
 
 // ── Aviso VIP: 3 dias antes, no vencimento e nos 5 dias seguintes ─────────
@@ -201,8 +202,8 @@ async function jobAvisoVip() {
       continue;
     }
     try {
-      await sendText(phone, mensagemMensalidadeVip(c, diffDias, valor), true);
-      await avisoRef.update({ status: 'enviado', enviado_em: new Date() });
+      await sendText(phone, mensagemMensalidadeVip(c, diffDias, valor, numeroAviso), true);
+      await avisoRef.update({ status: 'enviado', enviado_em: new Date(), formato: 'ciclo_v2', numero_aviso: numeroAviso });
       logger.info(`[agend] Aviso VIP (${numeroAviso || diffDias}) → ${c.nome}`);
 
       // Depois do quinto dia, consulta o Mercado Pago uma última vez antes de
@@ -226,6 +227,34 @@ async function jobAvisoVip() {
       continue;
     }
   }
+}
+
+// Corrige apenas os avisos enviados hoje pelo formato antigo. A marca no
+// próprio aviso impede que a correção seja repetida em outro reinício.
+async function jobCorrigirAvisosVipHoje() {
+  const db = getFirestore();
+  const dataHoje = chaveDataSaoPaulo();
+  const avisos = await db.collection('avisos_mensalidade_vip').where('data', '==', dataHoje).get();
+  let corrigidos = 0;
+  for (const avisoDoc of avisos.docs) {
+    const aviso = avisoDoc.data();
+    if (aviso.status !== 'enviado' || aviso.formato === 'ciclo_v2' || aviso.correcao_vencimento_enviada) continue;
+    const clienteSnap = await db.collection('clientes').where('id', '==', Number(aviso.cliente_id)).limit(1).get();
+    if (clienteSnap.empty) continue;
+    const c = clienteSnap.docs[0].data();
+    if (statusMensalidadeEfetivo(c) !== 'vencida') continue;
+    const phone = clienteToWhatsapp(c);
+    if (!phone) continue;
+    const cicloSnap = await db.collection('ciclos_mensalidade_vip').doc(`${clienteSnap.docs[0].id}_${dataHoje.slice(0, 7)}`).get();
+    const numero = Number(cicloSnap.data()?.avisos_enviados || 1);
+    await sendText(phone,
+      `Correção da mensagem anterior: sua mensalidade venceu no dia *${c.data_vencimento_mensalidade}*. ` +
+      `Hoje iniciamos o aviso *${numero} de 5*. Desconsidere a quantidade de dias informada anteriormente.`, true);
+    await avisoDoc.ref.set({ correcao_vencimento_enviada: true, correcao_enviada_em: new Date() }, { merge: true });
+    corrigidos += 1;
+  }
+  if (corrigidos) logger.info(`[agend] ${corrigidos} correção(ões) de mensalidade enviada(s)`);
+  return corrigidos;
 }
 
 async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
@@ -378,8 +407,10 @@ function setupAgendamentos() {
   // a execução idempotente e permite iniciar hoje os vencidos já existentes.
   const vipStartup = setTimeout(() => r(jobAvisoVip), 5000);
   vipStartup.unref?.();
+  const vipCorrection = setTimeout(() => r(jobCorrigirAvisosVipHoje), 10000);
+  vipCorrection.unref?.();
 
   logger.info('[agend] Cron jobs registrados');
 }
 
-module.exports = { setupAgendamentos, jobAvisoVip, jobMensagensAgendadas, mensagemMensalidadeVip, removerVipInadimplente };
+module.exports = { setupAgendamentos, jobAvisoVip, jobCorrigirAvisosVipHoje, jobMensagensAgendadas, mensagemMensalidadeVip, removerVipInadimplente };
