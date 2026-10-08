@@ -264,3 +264,27 @@ test('pedido VIP passa intacto pelo backend', () => {
   assert.equal(aplicarTotaisConfiaveis(vip), vip);
   assert.equal(getCobrancaPendente(vip).valor, 33.3);
 });
+
+test('backend aceita pedido de promoção (tabela editada) e barra valor adulterado', () => {
+  const t2 = structuredClone(require('../tabela-free').TABELA_FREE_PADRAO);
+  t2.versao = 'free_v2';
+  t2.comissao_minima_unitaria = 5;
+  t2.travessia_unitaria = 5;
+  t2.categorias.iphone_lacrado.bandas[0].faixas[0].valor = 200;
+  const promo = snapshotPedidoFree({
+    id: 3, cliente_id: 1, viagem_id: 7, cotacao_dolar: 5, status: 'aguardando_pgto_travessia',
+    produtos: [{ descricao: 'iPhone', quantidade: 2, valor_unitario_usd: 900, categoria_free: 'iphone_lacrado' }],
+  }, { tabela: t2 });
+  assert.equal(promo.total_comissao_brl, 400);
+  const c = getCobrancaPendente({ ...promo, total_travessia_brl: 1 });
+  assert.equal(c.valor, 10); // 2 x R$ 5 da promoção
+  const confiavel = aplicarTotaisConfiaveis({ ...promo, total_comissao_brl: 1 });
+  assert.equal(confiavel.total_comissao_brl, 400);
+
+  const adulterado = structuredClone(promo);
+  adulterado.produtos[0].valor_unitario_usd = 1; // nota diz outro valor que o snapshot
+  assert.equal(getCobrancaPendente(adulterado), null);
+  const semSnapshot = structuredClone(promo);
+  delete semSnapshot.produtos[0].taxa_snapshot;
+  assert.equal(getCobrancaPendente(semSnapshot), null);
+});
