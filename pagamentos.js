@@ -1,5 +1,7 @@
 'use strict';
 
+const { aplicarTotaisConfiaveis } = require('./financeiro-free');
+
 const PAGAMENTO_PENDENTE = 'pendente';
 const PAGAMENTO_PAGO = 'pago';
 
@@ -25,13 +27,17 @@ function getValorComissaoAntecipada(pedido) {
   return arredondarCentavos((Number(pedido?.total_comissao_brl) || 0) * percentual / 100);
 }
 
-function getSaldoComissao(pedido) {
+function getSaldoComissao(pedidoOriginal) {
+  const pedido = aplicarTotaisConfiaveis(pedidoOriginal) || pedidoOriginal;
   const total = arredondarCentavos(pedido?.total_comissao_brl);
   if (getStatusPagamento(pedido, 'comissao_antecipada') !== PAGAMENTO_PAGO) return total;
   return Math.max(0, arredondarCentavos(total - getValorComissaoAntecipada(pedido)));
 }
 
-function getCobrancaPendente(pedido) {
+function getCobrancaPendente(pedidoOriginal) {
+  if (!pedidoOriginal) return null;
+  // Pedido Free: totais recalculados no backend; inconsistente = sem cobrança.
+  const pedido = aplicarTotaisConfiaveis(pedidoOriginal);
   if (!pedido) return null;
 
   if (

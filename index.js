@@ -21,6 +21,7 @@ const { setupWebhook } = require('./webhook');
 const { setupPortal } = require('./portal');
 const { setupMercadoPago } = require('./mercadopago');
 const { setupAdminNotas } = require('./admin-notas');
+const { setupMigracaoTipoCliente } = require('./migracao-tipo-cliente');
 const { setupListeners } = require('./notificacoes');
 const { setupAgendamentos } = require('./agendamentos');
 
@@ -32,6 +33,7 @@ setupWebhook(app);
 setupPortal(app);
 setupMercadoPago(app);
 setupAdminNotas(app);
+setupMigracaoTipoCliente(app);
 
 // Listeners Firestore em tempo real (notificações automáticas de status)
 setupListeners();

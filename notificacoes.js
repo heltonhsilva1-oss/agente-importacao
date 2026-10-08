@@ -8,6 +8,8 @@ const { sendText } = require('./uazapi');
 const { setConversa } = require('./firestore');
 const { buildPortalLink } = require('./portal-access');
 const { getSaldoComissao } = require('./pagamentos');
+const { getTipoCliente } = require('./tipo-cliente');
+const { enviarAvisosViagemFree } = require('./aviso-viagem-free');
 
 const PORTAL_URL   = process.env.PORTAL_URL   || 'https://minhaimportacao-5442a.web.app/portal';
 
@@ -80,6 +82,8 @@ async function notificarTodosClientes(mensagem) {
   for (const doc of snap.docs) {
     const c = doc.data();
     if (c.ativo === false) continue;
+    // Clientes Free recebem o aviso próprio, idempotente (aviso-viagem-free.js).
+    if (getTipoCliente(c) === 'free') continue;
     const d = (c.telefone || '').replace(/\D/g, '');
     if (!d || d.length < 10) continue;
     const phone = d.startsWith('55') ? d : `55${d}`;
@@ -262,9 +266,26 @@ function setupListeners() {
     (err) => logger.error('[notif] Erro no listener de clientes:', err.message)
   );
 
-  // ── Listener de viagens — nova viagem notifica todos os clientes ──────────
+  // ── Listener de viagens — viagem iniciada notifica os clientes ────────────
+  // VIP (e clientes ainda sem tipo): mensagem existente. FREE: aviso individual
+  // idempotente por cliente + viagem. "Iniciada" = viagem nova em andamento ou
+  // viagem que passou a ficar em andamento.
   let viagensCarregadas = false;
-  const viagemIds = new Set();
+  const viagemStatus = new Map();
+
+  async function viagemIniciada(viagem) {
+    logger.info(`[notif] Viagem ${viagem.id} iniciada — notificando clientes`);
+    const msg =
+      `Kidex Importações
+
+` +
+      `Iniciamos uma nova viagem! Aguardamos sua nota fiscal para retirar seu pedido no Paraguai.
+
+` +
+      `Envie sua nota pelo WhatsApp ou acesse o portal para mais informações.`;
+    await notificarTodosClientes(msg);
+    await enviarAvisosViagemFree({ db, sendText, viagem, pausaMs: 600 });
+  }
 
   db.collection('viagens').onSnapshot(
     (snap) => {
@@ -272,23 +293,25 @@ function setupListeners() {
         const viagem = change.doc.data();
         const id = String(viagem.id);
 
-        if (change.type === 'added') {
-          if (!viagensCarregadas) { viagemIds.add(id); return; }
-          if (viagemIds.has(id)) return;
-          viagemIds.add(id);
+        if (change.type === 'removed') { viagemStatus.delete(id); return; }
 
-          logger.info(`[notif] Nova viagem ${id} — notificando todos os clientes`);
-          const msg =
-            `Kidex Importações\n\n` +
-            `Iniciamos uma nova viagem! Aguardamos sua nota fiscal para retirar seu pedido no Paraguai.\n\n` +
-            `Envie sua nota pelo WhatsApp ou acesse o portal para mais informações.`;
-          await notificarTodosClientes(msg);
+        const anterior = viagemStatus.get(id);
+        viagemStatus.set(id, viagem.status);
+        if (!viagensCarregadas) return;
+
+        const iniciou = viagem.status === 'em_andamento' &&
+          (change.type === 'added' ? anterior === undefined : anterior !== undefined && anterior !== 'em_andamento');
+        if (!iniciou) return;
+        try {
+          await viagemIniciada(viagem);
+        } catch (err) {
+          logger.error('[notif] Erro ao notificar viagem iniciada:', err.message);
         }
       });
 
       if (!viagensCarregadas) {
         viagensCarregadas = true;
-        logger.info(`[notif] Cache de viagens carregado (${viagemIds.size} viagens)`);
+        logger.info(`[notif] Cache de viagens carregado (${viagemStatus.size} viagens)`);
       }
     },
     (err) => logger.error('[notif] Erro no listener de viagens:', err.message)

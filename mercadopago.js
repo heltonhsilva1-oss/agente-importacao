@@ -12,6 +12,7 @@ const { allowOrigin, setCors } = require('./portal');
 const { reservarGrupo, confirmarGrupo, encerrarGrupo } = require('./pix-grupos');
 const { sendText } = require('./uazapi');
 const { chaveDataSaoPaulo } = require('./mensalidade');
+const { reincluirVipPago } = require('./tipo-cliente');
 
 const API_BASE = 'https://api.mercadopago.com';
 const CHARGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -377,16 +378,16 @@ async function processOrderWebhook(orderId) {
       }, { merge: true });
     });
     const phone = String(charge.cliente_phone || '').replace(/\D/g, '');
-    if (clienteAntes.data()?.status_vip === 'removido_inadimplencia' && phone) {
-      try {
-        const { updateGroupParticipants } = require('./uazapi');
-        await updateGroupParticipants(process.env.VIP_GROUP_JID || '120363427841192975@g.us', 'add', [phone]);
-        await clienteRef.set({ status_vip: 'ativo', reincluido_grupo_vip_em: Timestamp.now() }, { merge: true });
-      } catch (error) {
-        logger.error('[mercadopago] Pagamento confirmado, mas reinclusão no VIP falhou:', error.message);
-        await sendText(process.env.OPERATOR_PHONE || '5511995715042',
-          `Pagamento VIP de ${charge.cliente_nome} confirmado, mas a reinclusão no grupo falhou: ${error.message}`, true);
-      }
+    try {
+      const { updateGroupParticipants } = require('./uazapi');
+      await reincluirVipPago({
+        db: getFirestore(), clienteRef, cliente: clienteAntes.data() || {}, phone,
+        adicionarAoGrupo: updateGroupParticipants, extras: { reincluido_grupo_vip_em: Timestamp.now() },
+      });
+    } catch (error) {
+      logger.error('[mercadopago] Pagamento confirmado, mas reinclusão no VIP falhou:', error.message);
+      await sendText(process.env.OPERATOR_PHONE || '5511995715042',
+        `Pagamento VIP de ${charge.cliente_nome} confirmado, mas a reinclusão no grupo falhou: ${error.message}`, true);
     }
     if (phone) await sendText(phone, `Pagamento da mensalidade VIP de *${charge.competencia}* confirmado automaticamente. Obrigado!`, true);
     return { paid: true, tipo: 'mensalidade_vip' };

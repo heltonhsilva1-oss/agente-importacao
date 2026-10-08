@@ -18,6 +18,7 @@ const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
 const { buildPortalLink } = require('./portal-access');
 const { statusMensalidadeEfetivo } = require('./mensalidade');
+const { aplicarConversao, getTipoCliente, grupoVipJid } = require('./tipo-cliente');
 const { padronizarNomeLoja } = require('./lojas');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
@@ -820,10 +821,16 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
 
   // Mensalidade VIP vencida — bloqueia qualquer fluxo até regularizar.
   // Tem prioridade sobre tudo, inclusive o comando global "menu".
-  if (statusMensalidadeEfetivo(clienteCadastrado) === 'vencida') {
+  const respostaVip = String(body || '').trim().toUpperCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // Free não paga mensalidade (statusMensalidadeEfetivo devolve 'isento'). Quem
+  // foi removido do VIP por inadimplência e responde exatamente PAGAR recebe a
+  // cobrança para voltar ao grupo; qualquer outra mensagem segue o fluxo normal.
+  const retornoVipRemovido = getTipoCliente(clienteCadastrado) === 'free'
+    && clienteCadastrado.status_vip === 'removido_inadimplencia'
+    && respostaVip === 'PAGAR';
+  if (statusMensalidadeEfetivo(clienteCadastrado) === 'vencida' || retornoVipRemovido) {
     logger.info(`[menu] Bloqueado por mensalidade vencida: ${normalPhone}`);
-    const respostaVip = String(body || '').trim().toUpperCase()
-      .normalize('NFD').replace(/[̀-ͯ]/g, '');
     if (respostaVip === 'PAGAR' || respostaVip === '1') {
       const config = await getConfiguracoes();
       const valor = Number(config.valorMensalidadeVIP || 0);
@@ -862,7 +869,13 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
       }
       try {
         const { updateGroupParticipants } = require('./uazapi');
-        await updateGroupParticipants(process.env.VIP_GROUP_JID || '120363427841192975@g.us', 'remove', [normalPhone]);
+        await updateGroupParticipants(grupoVipJid(), 'remove', [normalPhone]);
+        // Saiu do grupo: não é mais VIP, passa à tabela Free sem mensalidade.
+        if (!clienteSnap.empty) {
+          await aplicarConversao(db, clienteSnap.docs[0].ref, clienteSnap.docs[0].data(), {
+            para: 'free', motivo: 'saida_voluntaria', origem: 'menu.SAIR',
+          }, { status_vip: 'saiu_grupo' });
+        }
         await sendText(normalPhone, 'Sua saída do Grupo VIP foi concluída.', true);
         await sendText(OPERATOR_PHONE, `🚪 ${clienteCadastrado.nome} (${normalPhone}) solicitou *SAIR DO GRUPO VIP* e foi removido automaticamente.`, true);
       } catch (error) {

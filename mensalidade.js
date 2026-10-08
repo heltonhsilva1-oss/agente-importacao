@@ -28,6 +28,8 @@ function chaveDataSaoPaulo(hoje = hojeSaoPauloYMD()) {
 // vencimento cadastrado. "Paga" só é válida se registrada no mesmo mês/ano
 // do vencimento atual — senão um pagamento antigo ficaria válido para sempre.
 function statusMensalidadeEfetivo(cliente, hoje = hojeSaoPauloYMD()) {
+  // Cliente Free não paga mensalidade: nunca fica vencido nem entra em cobrança.
+  if (String(cliente?.tipo_cliente || '').toLowerCase() === 'free') return 'isento';
   const dia = parseInt(cliente?.data_vencimento_mensalidade, 10);
   if (isNaN(dia)) return cliente?.status_mensalidade || 'pendente';
 

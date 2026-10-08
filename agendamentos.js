@@ -14,7 +14,9 @@ const {
 } = require('./firestore');
 const { chaveDataSaoPaulo, diasParaVencimento, statusMensalidadeEfetivo } = require('./mensalidade');
 const { getSaldoComissao } = require('./pagamentos');
+const { reenviarFalhasViagemFree } = require('./aviso-viagem-free');
 const { processOrderWebhook, vipChargeId } = require('./mercadopago');
+const { aplicarConversao, getTipoCliente, grupoVipJid } = require('./tipo-cliente');
 
 const OPERATOR_PHONE = process.env.OPERATOR_PHONE || '5511995715042';
 const PORTAL_URL     = process.env.PORTAL_URL     || 'https://minhaimportacao-5442a.web.app/portal';
@@ -161,7 +163,8 @@ async function jobAvisoVip() {
   const dataHoje = chaveDataSaoPaulo();
   for (const doc of snap.docs) {
     const c = doc.data();
-    if (c.ativo === false || c.status_vip === 'removido_inadimplencia' || statusMensalidadeEfetivo(c) === 'paga') continue;
+    // Free não tem mensalidade; removidos por inadimplência já viraram Free.
+    if (c.ativo === false || getTipoCliente(c) === 'free' || c.status_vip === 'removido_inadimplencia' || statusMensalidadeEfetivo(c) === 'paga') continue;
     const diaVenc = parseInt(c.data_vencimento_mensalidade, 10);
     if (isNaN(diaVenc)) continue;
     const diffDias = diasParaVencimento(diaVenc);
@@ -258,6 +261,7 @@ async function jobCorrigirAvisosVipHoje() {
 }
 
 async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
+  if (getTipoCliente(cliente) === 'free') return;
   const competencia = dataHoje.slice(0, 7);
   const chargeRef = db.collection('cobrancas_pix').doc(vipChargeId(doc.id, competencia));
   const chargeSnap = await chargeRef.get();
@@ -267,16 +271,20 @@ async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
   const [clienteAtual, chargeAtual] = await Promise.all([doc.ref.get(), chargeRef.get()]);
   if (statusMensalidadeEfetivo(clienteAtual.data()) === 'paga' || chargeAtual.data()?.status === 'pago') return;
 
-  const groupJid = String(process.env.VIP_GROUP_JID || '120363427841192975@g.us').trim();
+  const groupJid = grupoVipJid();
   if (!groupJid) {
     await sendText(OPERATOR_PHONE, `Não foi possível remover ${cliente.nome} do VIP: configure VIP_GROUP_JID.`, true);
     return;
   }
   await updateGroupParticipants(groupJid, 'remove', [phone]);
-  await doc.ref.set({
+  // Removido do grupo por inadimplência → deixa de ser VIP e passa à tabela
+  // Free, sem bloqueio por mensalidade. Pagando e sendo reincluído, volta VIP.
+  await aplicarConversao(db, doc.ref, cliente, {
+    para: 'free', motivo: 'remocao_inadimplencia', origem: 'agendamentos.removerVipInadimplente',
+  }, {
     status_vip: 'removido_inadimplencia', removido_grupo_vip_em: new Date(),
     removido_grupo_vip_competencia: competencia,
-  }, { merge: true });
+  });
   await db.collection('ciclos_mensalidade_vip').doc(`${doc.id}_${competencia}`).set({
     status: 'removido', removido_em: new Date(), atualizado_em: new Date(),
   }, { merge: true });
@@ -286,6 +294,12 @@ async function removerVipInadimplente({ db, doc, cliente, phone, dataHoje }) {
   });
   await sendText(phone, 'Como a mensalidade permaneceu em aberto por 5 dias, sua participação no grupo VIP foi encerrada. Se quiser retornar, responda *PAGAR*.', true);
   await sendText(OPERATOR_PHONE, `🚪 ${cliente.nome} (${phone}) foi removido automaticamente do Grupo VIP após 5 dias sem pagamento.`, true);
+}
+
+// ── Reenvio dos avisos de viagem iniciada (Free) que falharam ────────────────
+async function jobReenviarAvisosViagemFree() {
+  const r = await reenviarFalhasViagemFree({ db: getFirestore(), sendText });
+  if (r.enviados || r.falhas) logger.info(`[agend] Avisos de viagem Free reenviados: ${r.enviados} ok, ${r.falhas} falhas`);
 }
 
 // ── Resumo matinal para o operador — todo dia às 8h ──────────────────────────
@@ -395,6 +409,7 @@ function setupAgendamentos() {
   cron.schedule('0 9 * * *',   () => r(jobLembreteComissao),         { timezone: TZ }); // diário
   cron.schedule('0 9 * * *',   () => r(jobAvisoVip),                 { timezone: TZ });
   cron.schedule('0 9 * * *',   () => r(jobAlertaPedidoParado),       { timezone: TZ });
+  cron.schedule('15 9-19 * * *', () => r(jobReenviarAvisosViagemFree), { timezone: TZ });
 
   // Sexta — alerta urgente de travessia às 9h + corte ao meio-dia
   cron.schedule('0 9  * * 5',  () => r(jobAlertaUrgenteTravessia),   { timezone: TZ });

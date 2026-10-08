@@ -125,4 +125,25 @@ async function updateGroupParticipants(groupJid, action, participants) {
   }
 }
 
-module.exports = { sendText, sendMedia, updateGroupParticipants, isHoraComercial };
+// Lista os participantes de um grupo (somente leitura — não altera o grupo).
+async function getGroupParticipants(groupJid) {
+  const url = baseUrl();
+  if (!url) throw new Error('UAZAPI_SERVER_URL não configurado');
+  const group = String(groupJid || '').trim();
+  if (!group.endsWith('@g.us')) throw new Error('VIP_GROUP_JID inválido');
+  try {
+    const response = await axios.post(
+      `${url}/group/info`,
+      { groupjid: group, getInviteLink: false, getRequestsParticipants: false, force: true },
+      { headers: headers(), timeout: 30000 }
+    );
+    const data = response.data || {};
+    const lista = data.Participants || data.participants || data.group?.Participants || [];
+    return { nome: data.Name || data.name || data.Subject || '', participantes: Array.isArray(lista) ? lista : [] };
+  } catch (err) {
+    logger.error('[uazapi] Erro ao consultar participantes do grupo:', err.response?.data || err.message);
+    throw err;
+  }
+}
+
+module.exports = { sendText, sendMedia, updateGroupParticipants, getGroupParticipants, isHoraComercial };
