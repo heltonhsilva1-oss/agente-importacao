@@ -681,6 +681,17 @@ async function handleOperadorResposta(body) {
   // Comando único do operador: dispara o aviso de erro sistêmico acima.
   const normalizadoCmd = (body || '').trim().toUpperCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  // Backup sob demanda (o automático roda às 3h30): confirma que está funcionando.
+  if (normalizadoCmd === 'BACKUP') {
+    try {
+      const { rodarBackupDiario } = require('./backup');
+      const r = await rodarBackupDiario();
+      await sendText(OPERATOR_PHONE, `Backup de ${r.data} concluído: ${r.total} registros em ${Object.keys(r.colecoes).length} coleções.`, true);
+    } catch (erro) {
+      await sendText(OPERATOR_PHONE, `Backup falhou: ${String(erro?.message || erro).slice(0, 200)}`, true);
+    }
+    return true;
+  }
   if (normalizadoCmd === 'AVISAR VENCIDAS') {
     const resultado = await jobAvisoErroSistemicoMensalidade();
     await sendText(OPERATOR_PHONE,

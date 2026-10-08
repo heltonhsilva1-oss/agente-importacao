@@ -155,7 +155,7 @@ test('ignora reenvio com o mesmo ID mesmo após nova requisição', async () => 
   }
 });
 
-test('sem configuração retorna indisponível e health informa proteção desativada', async () => {
+test('sem segredo configurado o webhook aceita a chamada (decisão do commit 0281311) e o health avisa proteção desativada', async () => {
   const servidor = await iniciarServidor('');
   try {
     const resposta = await fetch(`${servidor.url}/webhook/qualquer`, {
@@ -163,7 +163,7 @@ test('sem configuração retorna indisponível e health informa proteção desat
       headers: { 'content-type': 'application/json' },
       body: '{}',
     });
-    assert.equal(resposta.status, 503);
+    assert.equal(resposta.status, 200);
 
     const health = await fetch(`${servidor.url}/health`);
     assert.equal(health.status, 200);

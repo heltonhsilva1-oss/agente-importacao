@@ -10,6 +10,7 @@ const { buildPortalLink } = require('./portal-access');
 const { getSaldoComissao } = require('./pagamentos');
 const { getTipoCliente } = require('./tipo-cliente');
 const { enviarAvisosViagemFree } = require('./aviso-viagem-free');
+const { alertarFalha } = require('./alertas');
 
 const PORTAL_URL   = process.env.PORTAL_URL   || 'https://minhaimportacao-5442a.web.app/portal';
 
@@ -210,7 +211,7 @@ function setupListeners() {
         logger.info(`[notif] Cache de pedidos carregado (${statusCache.size} pedidos)`);
       }
     },
-    (err) => logger.error('[notif] Erro no listener de pedidos:', err.message)
+    (err) => { logger.error('[notif] Erro no listener de pedidos:', err.message); alertarFalha('listener de pedidos', err); }
   );
 
   // ── Listener de clientes — boas-vindas para novo cliente ──────────────────
@@ -263,7 +264,7 @@ function setupListeners() {
         logger.info(`[notif] Cache de clientes carregado (${clienteIds.size} clientes)`);
       }
     },
-    (err) => logger.error('[notif] Erro no listener de clientes:', err.message)
+    (err) => { logger.error('[notif] Erro no listener de clientes:', err.message); alertarFalha('listener de clientes', err); }
   );
 
   // ── Listener de viagens — viagem iniciada notifica os clientes ────────────
@@ -314,7 +315,7 @@ function setupListeners() {
         logger.info(`[notif] Cache de viagens carregado (${viagemStatus.size} viagens)`);
       }
     },
-    (err) => logger.error('[notif] Erro no listener de viagens:', err.message)
+    (err) => { logger.error('[notif] Erro no listener de viagens:', err.message); alertarFalha('listener de viagens', err); }
   );
 }
 

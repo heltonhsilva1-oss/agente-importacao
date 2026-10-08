@@ -1,0 +1,20 @@
+name: Testes
+
+# Roda a cada envio. Para o Railway só publicar depois que isto passar, ative
+# "Wait for CI" nas configurações do serviço no Railway.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test

@@ -14,6 +14,14 @@ if (serviceAccount) {
   admin.initializeApp();
 }
 
+// Falhas inesperadas viram log + aviso ao operador (em vez de passar em silêncio).
+const { alertarFalha } = require('./alertas');
+process.on('unhandledRejection', (erro) => { alertarFalha('erro não tratado', erro); });
+process.on('uncaughtException', async (erro) => {
+  await alertarFalha('erro fatal (o servidor vai reiniciar)', erro);
+  process.exit(1);
+});
+
 // ── Express ───────────────────────────────────────────────────────────────────
 const express = require('express');
 const { logger } = require('./logger');

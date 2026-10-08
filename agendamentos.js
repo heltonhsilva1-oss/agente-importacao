@@ -15,6 +15,8 @@ const {
 const { chaveDataSaoPaulo, diasParaVencimento, statusMensalidadeEfetivo } = require('./mensalidade');
 const { getSaldoComissao } = require('./pagamentos');
 const { reenviarFalhasViagemFree } = require('./aviso-viagem-free');
+const { protegerRotina } = require('./alertas');
+const { rodarBackupDiario } = require('./backup');
 const { processOrderWebhook, vipChargeId } = require('./mercadopago');
 const { aplicarConversao, getTipoCliente, grupoVipJid } = require('./tipo-cliente');
 
@@ -302,6 +304,11 @@ async function jobReenviarAvisosViagemFree() {
   if (r.enviados || r.falhas) logger.info(`[agend] Avisos de viagem Free reenviados: ${r.enviados} ok, ${r.falhas} falhas`);
 }
 
+// ── Backup diário do Firestore para o Storage ───────────────────────────────
+async function jobBackupDiario() {
+  await rodarBackupDiario();
+}
+
 // ── Resumo matinal para o operador — todo dia às 8h ──────────────────────────
 async function jobResumoMatinal() {
   logger.info('[agend] Resumo matinal');
@@ -397,9 +404,11 @@ async function jobMensagensAgendadas() {
 }
 
 function setupAgendamentos() {
-  const r = (fn) => fn().catch(e => logger.error('[agend]', e.message));
+  // Falha de qualquer rotina é registrada e avisada ao operador (sem derrubar o agente).
+  const r = (fn) => protegerRotina(fn.name || 'rotina', fn)();
 
   // Toda manhã às 8h — fila + resumo + alerta urgente comissão (segunda)
+  cron.schedule('30 3 * * *',  () => r(jobBackupDiario),             { timezone: TZ });
   cron.schedule('0 8 * * *',   () => r(jobMensagensAgendadas),       { timezone: TZ });
   cron.schedule('0 8 * * *',   () => r(jobResumoMatinal),            { timezone: TZ });
   cron.schedule('0 8 * * 1',   () => r(jobAlertaUrgenteComissao),    { timezone: TZ }); // segunda
