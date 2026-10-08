@@ -220,174 +220,397 @@ async function estaAceitandoNotas() {
   return viagemAceitaNotas(viagem, cfg);
 }
 
+// Mensagem que é só um cumprimento ("oi", "bom dia", "olá, tudo bem?").
+const PALAVRAS_SAUDACAO = new Set([
+  'oi', 'oii', 'oiii', 'oie', 'ola', 'opa', 'eai', 'e', 'ai', 'bom', 'dia', 'boa', 'tarde', 'noite',
+  'tudo', 'bem', 'td', 'certo', 'bom', 'salve', 'hey', 'hello', 'hi', 'pessoal', 'gente', 'como',
+  'vai', 'voce', 'vc', 'ola', 'oláa',
+]);
+function ehSaudacao(texto) {
+  const palavras = String(texto || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(p => p.replace(/(.)\1{2,}/g, '$1$1')); // "oiiiii" -> "oii"
+  return palavras.length > 0 && palavras.length <= 6 && palavras.every(p => PALAVRAS_SAUDACAO.has(p));
+}
+
+const MSG_FORA_DO_CORTE =
+  'No momento não estamos mais aceitando notas fiscais — o corte desta semana já passou. ' +
+  'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.';
+
 async function iniciarFlow1(phone) {
   if (!(await estaAceitandoNotas())) {
-    await sendText(phone,
-      'No momento não estamos mais aceitando notas fiscais — o corte desta semana já passou. ' +
-      'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.',
-      true);
+    await sendText(phone, MSG_FORA_DO_CORTE, true);
     return;
   }
 
-  await send(phone, 'Peça o nome da loja de onde veio a mercadoria.', { estado: 'flow1_loja' },
-    'Por favor, me informe o nome da loja.');
-  await setConversa(phone, { estado: 'flow1_loja', dados: {} });
+  // Basta a foto: loja e produtos são lidos da própria nota.
+  await sendText(phone,
+    'Pode enviar a foto, print ou PDF da nota fiscal. 📄\n\n' +
+    'Se tiver mais de uma nota, envie uma de cada vez. Quando terminar, responda *PRONTO*.',
+    true);
+  await setConversa(phone, { estado: 'flow1_notas', dados: dadosVaziosNotas() });
+}
+
+// ══ Envio de notas pelo WhatsApp ═════════════════════════════════════════════
+// O cliente manda a(s) foto(s). Cada foto vira uma nota numerada e é lida em
+// paralelo. Loja e vendedor vêm da leitura; só o que a leitura não achar é
+// perguntado ao cliente, uma nota por vez. Estado único: flow1_notas, com
+//   dados = { count, pendentes: [{ n, mediaUrl, mimeType, rawContent, loja, vendedor, fase }],
+//             resumo: [{ n, loja, vendedor }], perguntando: n|null, finalizar: bool }
+// fase: 'lendo' | 'aguardando_info'. Notas já registradas saem de `pendentes`.
+
+const ATRASO_CONFIRMACAO_MS = Number(process.env.NOTAS_CONFIRMACAO_MS ?? 3000);
+
+function dadosVaziosNotas() {
+  return { count: 0, pendentes: [], resumo: [], perguntando: null, finalizar: false };
+}
+const normalizarDadosNotas = dados => ({ ...dadosVaziosNotas(), ...(dados || {}) });
+
+// Aviso ao cliente só quando a leitura dá problema (sucesso é silencioso).
+function mensagemFalhaLeitura({ numeroNota, extracaoStatus, erroTipo }) {
+  if (erroTipo === 'formato_nao_suportado') {
+    return `Não consegui abrir a nota ${numeroNota}. Por favor, reenvie em formato JPG, PNG ou PDF.`;
+  }
+  if (erroTipo === 'url_expirada') {
+    return `A nota ${numeroNota} expirou antes de eu conseguir ler. Por favor, reenvie a foto.`;
+  }
+  if (extracaoStatus !== 'ok') {
+    return `Recebi a nota ${numeroNota}, mas não consegui ler os produtos com clareza. ` +
+      'Nossa equipe vai conferir manualmente. Se a foto estiver cortada ou escura, pode reenviar. 🙏';
+  }
+  return '';
+}
+
+// Interpreta "ATN - João", "ATN, João", "ATN / João" ou duas linhas.
+// Só a loja também é aceita; o vendedor fica em branco.
+function interpretarLojaVendedor(texto) {
+  const partes = String(texto || '')
+    .split(/\s*(?:\n|,|;|\/|\||\s[-–—]\s)\s*/)
+    .map(p => p.trim())
+    .filter(Boolean);
+  return { loja: partes[0] || '', vendedor: partes.slice(1).join(' ') };
+}
+
+// Resultado da leitura de cada nota, em memória (tem o arquivo); se o servidor
+// reiniciar, a nota é lida de novo a partir do link.
+const leituras = new Map();
+const chaveLeitura = (phone, n) => `${phone}:${n}`;
+
+// Cria o rascunho para o operador conferir. Nunca lança: roda "solto".
+async function processarNota(phone, nota, numeroNota) {
+  try {
+    const resultado = await (nota.leitura || extrairProdutosNota(nota.mediaUrl, nota.mimeType, nota.rawContent));
+    // resultado: { produtos } | { erro: 'url_expirada'|'formato_nao_suportado'|... } | null
+    const erroTipo       = resultado?.erro ?? null;
+    const produtos       = resultado?.produtos ?? [];
+    const extracaoStatus = !resultado || erroTipo ? 'erro' : produtos.length === 0 ? 'parcial' : 'ok';
+
+    const configuracoes = await getConfiguracoes();
+    const loja = padronizarNomeLoja(nota.loja, configuracoes.lojasPadronizadas);
+    const vendedor = String(nota.vendedor || '').trim();
+
+    // Resolve cliente pelo número WhatsApp (trata nono dígito e prefixo 55)
+    const clienteMatch = await findClienteByWhatsapp(phone);
+
+    let fotoNota = null;
+    if (resultado?.arquivo?.buffer) {
+      try {
+        fotoNota = await salvarNotaRecebida(resultado.arquivo.buffer, {
+          mimeType: resultado.arquivo.mimeType, phone, loja,
+        });
+      } catch (storageErr) {
+        logger.error('[menu] não foi possível arquivar nota:', storageErr.message);
+      }
+    }
+
+    const rascunhoId = await criarRascunhoPedido({
+      cliente_phone:      phone,
+      cliente_id:         clienteMatch?.id ?? null,
+      cliente_nome:       clienteMatch?.nome ?? phone,
+      nome_loja:          loja,
+      nome_vendedor:      vendedor,
+      foto_nota_url:      fotoNota?.url || nota.mediaUrl,
+      foto_nota:          fotoNota,
+      produtos,
+      extracao_status:    extracaoStatus,
+    });
+
+    const prodMsg = extracaoStatus === 'ok'
+      ? `${produtos.length} produto(s) extraído(s)`
+      : extracaoStatus === 'parcial'
+        ? 'nenhum produto identificado — revisão manual necessária'
+        : erroTipo === 'url_expirada'
+          ? 'URL da mídia expirada — cliente deve reenviar a nota'
+          : erroTipo === 'formato_nao_suportado'
+            ? `formato não suportado (${resultado?.sniffed || resultado?.rawType || '?'}) — cliente deve enviar JPG/PNG/PDF`
+            : 'erro na extração — revisão manual necessária';
+
+    const aviso = mensagemFalhaLeitura({ numeroNota, extracaoStatus, erroTipo });
+    if (aviso) await sendText(phone, aviso, true);
+    await sendText(OPERATOR_PHONE,
+      `Nova nota fiscal recebida! (nota ${numeroNota})\nCliente: ${phone}\nLoja: ${loja || '(não informada — preencha ao validar)'}\nVendedor: ${vendedor || '—'}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
+      true);
+  } catch (err) {
+    logger.error('[menu] processarNota erro:', err.message);
+  }
+}
+
+// Tudo que altera a conversa de notas de um cliente passa por esta fila (uma
+// operação por vez), para fotos e respostas simultâneas não se atropelarem.
+const filasNotas = new Map();
+function emFila(phone, tarefa) {
+  const anterior = filasNotas.get(phone) || Promise.resolve();
+  const atual = anterior.catch(() => {}).then(tarefa);
+  filasNotas.set(phone, atual);
+  atual.finally(() => { if (filasNotas.get(phone) === atual) filasNotas.delete(phone); }).catch(() => {});
+  return atual;
+}
+
+// ── confirmação de recebimento, agrupada (3 fotos seguidas = 1 mensagem) ─────
+const confirmacoes = new Map();
+
+function agendarConfirmacao(phone, ehPrimeiraDoAtendimento) {
+  const atual = confirmacoes.get(phone) || { quantidade: 0, primeira: ehPrimeiraDoAtendimento, timer: null };
+  atual.quantidade += 1;
+  clearTimeout(atual.timer);
+  atual.timer = setTimeout(() => { descarregarConfirmacao(phone); }, ATRASO_CONFIRMACAO_MS);
+  atual.timer.unref?.();
+  confirmacoes.set(phone, atual);
+}
+
+// Envia já a confirmação pendente (usado quando a leitura termina antes do prazo).
+async function descarregarConfirmacao(phone) {
+  const c = confirmacoes.get(phone);
+  if (!c) return;
+  confirmacoes.delete(phone);
+  clearTimeout(c.timer);
+  const texto = c.quantidade > 1
+    ? `Recebi ${c.quantidade} notas ✅ Já estou lendo.`
+    : c.primeira ? 'Recebi sua nota ✅ Já estou lendo.' : 'Recebi mais uma nota ✅ Já estou lendo.';
+  try {
+    await sendText(phone, texto, true);
+    appendHistorico(phone, 'assistant', texto);
+  } catch (err) {
+    logger.error('[menu] falha ao confirmar recebimento da nota:', err.message);
+  }
+}
+
+// ── perguntas e resumos ──────────────────────────────────────────────────────
+
+function perguntaFaltante(nota, numerar) {
+  const frase = txt => (numerar ? `Nota ${nota.n}: ${txt}` : txt[0].toUpperCase() + txt.slice(1));
+  if (!nota.loja && !nota.vendedor) {
+    return `${frase('não consegui ler a *loja* e o *vendedor*. 😅')}\nPode me dizer numa mensagem só? Por exemplo: *ATN - João*`;
+  }
+  if (!nota.loja) return frase(`li o vendedor (*${nota.vendedor}*), mas não consegui ler a *loja*. Qual é o nome da loja?`);
+  return frase(`li a loja *${nota.loja}*, mas não consegui ler o *vendedor*. Qual é o nome do vendedor?`);
+}
+
+const linhaNota = r => `Nota ${r.n}: *${r.loja}*${r.vendedor ? ` · ${r.vendedor}` : ''}`;
+const MSG_MAIS_NOTAS = 'Tem mais notas? Envie a foto. Quando terminar, responda *PRONTO*.';
+
+function mensagemFinal(count) {
+  return `Perfeito! Recebemos ${count} nota${count !== 1 ? 's' : ''} nesta retirada. Já estamos processando tudo. Obrigado!`;
+}
+
+// Decide o que dizer agora (resumo, próxima pergunta, fechamento) e grava a
+// conversa. Só fala quando termina a leitura de TODAS as fotos do momento.
+async function avancar(phone, dados) {
+  if (dados.pendentes.some(p => p.fase === 'lendo')) {
+    await setConversa(phone, { estado: 'flow1_notas', dados });
+    return;
+  }
+
+  const haPergunta = dados.perguntando != null || dados.pendentes.some(p => p.fase === 'aguardando_info');
+
+  if (dados.resumo.length) {
+    const k = dados.resumo.length;
+    let texto = k === 1
+      ? `Anotei ✅ ${linhaNota(dados.resumo[0])}. Já enviei para conferência.`
+      : `Anotei ✅ ${k} notas já enviadas para conferência:\n${dados.resumo.map(r => `• ${linhaNota(r)}`).join('\n')}`;
+    dados.resumo = [];
+    if (!haPergunta && !dados.finalizar) texto += `\n\n${MSG_MAIS_NOTAS}`;
+    await sendText(phone, texto, true);
+    appendHistorico(phone, 'assistant', texto);
+  }
+
+  if (dados.perguntando == null) {
+    const proxima = dados.pendentes.find(p => p.fase === 'aguardando_info');
+    if (proxima) {
+      dados.perguntando = proxima.n;
+      const pergunta = perguntaFaltante(proxima, dados.count > 1);
+      await sendText(phone, pergunta, true);
+      appendHistorico(phone, 'assistant', pergunta);
+    }
+  }
+
+  if (!dados.pendentes.length && dados.finalizar) {
+    await clearConversa(phone);
+    await sendText(phone, mensagemFinal(dados.count), true);
+    appendHistorico(phone, 'assistant', `Retirada finalizada com ${dados.count} nota(s).`);
+    return;
+  }
+  await setConversa(phone, { estado: 'flow1_notas', dados });
+}
+
+// ── recebimento da foto e leitura ────────────────────────────────────────────
+
+// Resultado da leitura chega aqui (dentro da fila): registra a nota se achou
+// tudo, ou a deixa aguardando a resposta do cliente.
+async function aplicarLeitura(phone, n, leitura) {
+  await descarregarConfirmacao(phone);
+  const conv = await getConversa(phone);
+  if (!conv?.estado?.startsWith('flow1_')) return; // conversa encerrada/expirada: já foi tratada
+  const dados = normalizarDadosNotas(conv.dados);
+  const nota = dados.pendentes.find(p => p.n === n);
+  if (!nota) return;
+
+  const configuracoes = await getConfiguracoes();
+  nota.loja = padronizarNomeLoja(leitura?.loja || '', configuracoes.lojasPadronizadas);
+  nota.vendedor = String(leitura?.vendedor || '').trim();
+  leituras.set(chaveLeitura(phone, n), leitura);
+
+  if (nota.loja && nota.vendedor) {
+    processarNota(phone, { ...nota, leitura }, n); // não bloqueia
+    leituras.delete(chaveLeitura(phone, n));
+    dados.pendentes = dados.pendentes.filter(p => p.n !== n);
+    dados.resumo.push({ n, loja: nota.loja, vendedor: nota.vendedor });
+  } else {
+    nota.fase = 'aguardando_info';
+  }
+  await avancar(phone, dados);
+}
+
+function lerNota(phone, n, { mediaUrl, mimeType, rawContent }) {
+  Promise.resolve()
+    .then(() => extrairProdutosNota(mediaUrl, mimeType, rawContent))
+    .catch(err => { logger.error('[menu] leitura da nota falhou:', err.message); return null; })
+    .then(leitura => emFila(phone, () => aplicarLeitura(phone, n, leitura)))
+    .catch(err => logger.error('[menu] aplicarLeitura erro:', err.message));
+}
+
+// Toda foto vira uma nota: numera, confirma (agrupado) e lê em paralelo.
+function receberNotaPorFoto(phone, { mediaUrl, mimeType, rawContent }) {
+  return emFila(phone, async () => {
+    if (!(await estaAceitandoNotas())) {
+      await clearConversa(phone);
+      await sendText(phone, MSG_FORA_DO_CORTE, true);
+      return;
+    }
+    const conv = await getConversa(phone);
+    const dados = normalizarDadosNotas(conv?.estado?.startsWith('flow1_') ? conv.dados : null);
+    const n = dados.count + 1;
+    dados.count = n;
+    dados.finalizar = false; // mandou outra nota: o atendimento continua
+    dados.pendentes.push({ n, mediaUrl, mimeType, rawContent, loja: '', vendedor: '', fase: 'lendo' });
+    await setConversa(phone, { estado: 'flow1_notas', dados });
+
+    agendarConfirmacao(phone, n === 1);
+    lerNota(phone, n, { mediaUrl, mimeType, rawContent });
+  });
+}
+
+// ── texto do cliente durante o envio de notas ────────────────────────────────
+
+const RE_FIM_DAS_NOTAS = /^(pronto|prontinho|n[aã]o|nao|n|finalizar|acabou|encerrar|fim|so isso|s[oó] isso|terminei|0)\b/;
+
+async function tratarTextoNotas(phone, body) {
+  const conv = await getConversa(phone);
+  if (!conv?.estado?.startsWith('flow1_')) return;
+  const dados = normalizarDadosNotas(conv.dados);
+  const resposta = String(body || '').trim().toLowerCase();
+  const terminou = RE_FIM_DAS_NOTAS.test(resposta);
+
+  // Respondendo a pergunta sobre uma nota (loja e/ou vendedor).
+  if (dados.perguntando != null) {
+    const nota = dados.pendentes.find(p => p.n === dados.perguntando);
+    if (!nota) { dados.perguntando = null; await avancar(phone, dados); return; }
+
+    const pergunta = perguntaFaltante(nota, dados.count > 1);
+    let loja = nota.loja;
+    let vendedor = nota.vendedor;
+    if (terminou && resposta.length <= 8) {
+      await sendText(phone, `Antes de finalizar, falta só isso:\n${pergunta}`, true);
+      return;
+    }
+    if (!nota.loja && !nota.vendedor) ({ loja, vendedor } = interpretarLojaVendedor(body));
+    else if (!nota.loja) loja = interpretarLojaVendedor(body).loja;
+    else vendedor = String(body || '').trim();
+    if ((!nota.loja && loja.length < 2) || (nota.loja && vendedor.length < 2)) {
+      await sendText(phone, `Não entendi. ${pergunta}`, true);
+      return;
+    }
+
+    const configuracoes = await getConfiguracoes();
+    const lojaFinal = padronizarNomeLoja(loja, configuracoes.lojasPadronizadas);
+    const chave = chaveLeitura(phone, nota.n);
+    processarNota(phone, { ...nota, loja: lojaFinal, vendedor, leitura: leituras.get(chave) }, nota.n);
+    leituras.delete(chave);
+    dados.pendentes = dados.pendentes.filter(p => p.n !== nota.n);
+    dados.resumo.push({ n: nota.n, loja: lojaFinal, vendedor });
+    dados.perguntando = null;
+    await avancar(phone, dados);
+    return;
+  }
+
+  if (terminou) {
+    if (dados.pendentes.length) { // ainda lendo
+      dados.finalizar = true;
+      await setConversa(phone, { estado: 'flow1_notas', dados });
+      await sendText(phone, 'Certo! Assim que eu terminar de ler as notas, fecho por aqui. 😊', true);
+      return;
+    }
+    await clearConversa(phone);
+    await sendText(phone, dados.count > 0
+      ? mensagemFinal(dados.count)
+      : 'Tudo bem! Quando quiser enviar uma nota, é só mandar a foto por aqui.', true);
+    if (dados.count > 0) appendHistorico(phone, 'assistant', `Retirada finalizada com ${dados.count} nota(s).`);
+    return;
+  }
+
+  if (dados.pendentes.length) {
+    await sendText(phone, 'Só um instante, ainda estou lendo as notas. 😊', true);
+    return;
+  }
+  if (/^(sim|s|outra|mais|tem|quero|1)\b/.test(resposta)) {
+    await sendText(phone, 'Certo! Pode enviar a próxima nota (foto, print ou PDF).', true);
+    return;
+  }
+  await sendText(phone,
+    dados.count > 0
+      ? 'Se tiver mais notas, é só enviar a foto. Quando terminar, responda *PRONTO*.'
+      : 'Por favor, envie a foto, print ou PDF da nota fiscal. 📄',
+    true);
 }
 
 async function handleFlow1(phone, estado, body, mediaUrl, mimeType, rawContent = null) {
-  const conv  = await getConversa(phone);
-  const dados = conv?.dados || {};
   saveUserMsg(phone, body);
 
-  if (estado === 'flow1_loja') {
-    if (!body?.trim()) {
-      await send(phone, 'Peça o nome da loja novamente.', { estado }, 'Por favor, informe o nome da loja.');
-      return;
-    }
-    const configuracoes = await getConfiguracoes();
-    dados.loja = padronizarNomeLoja(body, configuracoes.lojasPadronizadas);
-    await send(phone, 'Confirme que recebeu o nome da loja e peça o nome do vendedor.', { estado: 'flow1_vendedor', dados },
-      'Agora me informe o nome do vendedor.');
-    await setConversa(phone, { estado: 'flow1_vendedor', dados });
+  // Qualquer foto/PDF recebido durante o envio de notas é uma nota.
+  if (mediaUrl) {
+    await receberNotaPorFoto(phone, { mediaUrl, mimeType, rawContent });
     return;
   }
+  await emFila(phone, () => tratarTextoNotas(phone, body));
+}
 
-  if (estado === 'flow1_vendedor') {
-    if (!body?.trim()) {
-      await send(phone, 'Peça o nome do vendedor novamente.', { estado }, 'Por favor, informe o nome do vendedor.');
-      return;
-    }
-    dados.vendedor = body.trim();
-    await send(phone, 'Confirme loja e vendedor recebidos e peça a nota fiscal (foto, print ou PDF).', { estado: 'flow1_arquivo', dados },
-      'Agora envie a foto, print ou PDF da nota fiscal.');
-    await setConversa(phone, { estado: 'flow1_arquivo', dados });
-    return;
+// Conversa de notas parada (cliente sumiu): nenhuma nota pode se perder. As
+// que ainda estavam pendentes vão para conferência com o que se sabe.
+async function registrarPendentesExpirados(phone, conv) {
+  const dados = normalizarDadosNotas(conv.dados);
+  if (!dados.pendentes.length) return;
+  for (const nota of dados.pendentes) {
+    const chave = chaveLeitura(phone, nota.n);
+    processarNota(phone, { ...nota, leitura: leituras.get(chave) }, nota.n);
+    leituras.delete(chave);
   }
-
-  if (estado === 'flow1_arquivo') {
-    if (!mediaUrl) {
-      await send(phone, 'Lembre de enviar a nota fiscal como imagem ou PDF.', { estado },
-        'Por favor, envie a foto, print ou PDF da nota fiscal.');
-      return;
-    }
-
-    // Snapshot dos dados desta nota — o processamento é assíncrono e não pode
-    // depender de `dados`, que será reaproveitado se houver nota de outra loja.
-    const nota = { loja: dados.loja ?? '', vendedor: dados.vendedor ?? '', mediaUrl, mimeType, rawContent };
-    const numeroNota = (dados.count || 0) + 1;
-
-    // Continua o fluxo: pergunta se há nota de outra loja (não encerra)
-    await setConversa(phone, { estado: 'flow1_mais', dados: { count: numeroNota } });
-    await sendText(phone,
-      `Nota ${numeroNota} recebida! Estamos processando.\n\nVocê tem nota de *outra loja* nesta retirada? Responda *SIM* para enviar outra ou *NÃO* para finalizar.`,
-      true);
-    appendHistorico(phone, 'assistant', `Nota ${numeroNota} recebida. Tem nota de outra loja? SIM/NÃO`);
-
-    // Extrai produtos via Claude Vision (não bloqueia resposta ao cliente)
-    extrairProdutosNota(nota.mediaUrl, nota.mimeType, nota.rawContent).then(async resultado => {
-      try {
-        // resultado pode ser: { produtos: [...] } | { erro: 'url_expirada'|'formato_nao_suportado' } | null
-        const erroTipo       = resultado?.erro ?? null;
-        const produtos       = resultado?.produtos ?? [];
-        const extracaoStatus = !resultado || erroTipo ? 'erro' : produtos.length === 0 ? 'parcial' : 'ok';
-
-        // Resolve cliente pelo número WhatsApp (trata nono dígito e prefixo 55)
-        const clienteMatch = await findClienteByWhatsapp(phone);
-
-        let fotoNota = null;
-        if (resultado?.arquivo?.buffer) {
-          try {
-            fotoNota = await salvarNotaRecebida(resultado.arquivo.buffer, {
-              mimeType: resultado.arquivo.mimeType,
-              phone,
-              loja: nota.loja,
-            });
-          } catch (storageErr) {
-            logger.error('[menu] não foi possível arquivar nota:', storageErr.message);
-          }
-        }
-
-        const rascunhoId = await criarRascunhoPedido({
-          cliente_phone:      phone,
-          cliente_id:         clienteMatch?.id ?? null,
-          cliente_nome:       clienteMatch?.nome ?? phone,
-          nome_loja:          nota.loja,
-          nome_vendedor:      nota.vendedor,
-          foto_nota_url:      fotoNota?.url || nota.mediaUrl,
-          foto_nota:          fotoNota,
-          produtos,
-          extracao_status:    extracaoStatus,
-        });
-
-        const prodMsg = extracaoStatus === 'ok'
-          ? `${produtos.length} produto(s) extraído(s)`
-          : extracaoStatus === 'parcial'
-            ? 'nenhum produto identificado — revisão manual necessária'
-            : erroTipo === 'url_expirada'
-              ? 'URL da mídia expirada — cliente deve reenviar a nota'
-              : erroTipo === 'formato_nao_suportado'
-                ? `formato não suportado (${resultado?.sniffed || resultado?.rawType || '?'}) — cliente deve enviar JPG/PNG/PDF`
-                : 'erro na extração — revisão manual necessária';
-
-        // Avisa cliente se o formato não for suportado
-        if (erroTipo === 'formato_nao_suportado') {
-          await sendText(phone,
-            `Não conseguimos ler a nota ${numeroNota} (loja ${nota.loja}). Por favor, reenvie em formato JPG, PNG ou PDF.`,
-            true);
-        } else if (erroTipo === 'url_expirada') {
-          await sendText(phone,
-            `A nota ${numeroNota} (loja ${nota.loja}) expirou antes de ser processada. Por favor, reenvie.`,
-            true);
-        }
-
-        await sendText(OPERATOR_PHONE,
-          `Nova nota fiscal recebida! (nota ${numeroNota})\nCliente: ${phone}\nLoja: ${nota.loja}\nVendedor: ${nota.vendedor}\nResultado: ${prodMsg}\nID rascunho: ${rascunhoId}`,
-          true);
-      } catch (err) {
-        logger.error('[menu] flow1_arquivo pos-extracao erro:', err.message);
-      }
-    });
-    return;
-  }
-
-  if (estado === 'flow1_mais') {
-    const resposta = (body || '').trim().toLowerCase();
-    const count    = dados.count || 0;
-    const sim = /^(sim|s|outra|mais|adicionar|tem|quero|1)\b/.test(resposta) || resposta === 'sim';
-    const nao = /^(n[aã]o|nao|n|finalizar|pronto|acabou|encerrar|fim|so isso|s[oó] isso|0)\b/.test(resposta);
-
-    // Se o cliente já mandou outra foto direto, orienta a informar a loja primeiro
-    if (mediaUrl && !nao) {
-      await sendText(phone,
-        'Para registrar a nota da outra loja, me informe primeiro o *nome da loja*.',
-        true);
-      await setConversa(phone, { estado: 'flow1_loja', dados: { count } });
-      return;
-    }
-
-    if (sim) {
-      await send(phone, 'Confirme que vai registrar a nota de outra loja e peça o nome dessa loja.',
-        { estado: 'flow1_loja', dados: { count } },
-        'Certo! Qual o nome da *outra loja*?');
-      await setConversa(phone, { estado: 'flow1_loja', dados: { count } });
-      return;
-    }
-
-    if (nao) {
-      await clearConversa(phone);
-      await sendText(phone,
-        `Perfeito! Recebemos ${count} nota${count !== 1 ? 's' : ''} nesta retirada. Já estamos processando tudo. Obrigado!`,
-        true);
-      appendHistorico(phone, 'assistant', `Retirada finalizada com ${count} nota(s).`);
-      return;
-    }
-
-    // Não entendeu a resposta
-    await sendText(phone,
-      'Não entendi. Você tem nota de *outra loja*? Responda *SIM* para enviar outra ou *NÃO* para finalizar.',
-      true);
-    return;
-  }
+  await sendText(phone,
+    `Registrei ${dados.pendentes.length === 1 ? 'a nota' : 'as notas'} que faltavam. Alguns dados (loja/vendedor) ficaram em aberto, então nossa equipe vai conferir.`,
+    true);
 }
 
 // ── flow 2: ver status (direto, sem CPF) ──────────────────────────────────────
@@ -905,6 +1128,8 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   // capturar como etiqueta a nota fiscal enviada dias depois.
   const conv = await getConversa(normalPhone);
   if (conv && estadoExpiraPorInatividade(conv.estado) && isTimedOut(conv)) {
+    // Cliente mandou fotos e sumiu antes de responder: a nota não pode se perder.
+    if (conv.estado === 'flow1_notas') await registrarPendentesExpirados(normalPhone, conv);
     await send(normalPhone, 'Informe que a sessão expirou e vai reiniciar.',
       {}, 'Sua sessão expirou. Vou reiniciar o atendimento.');
     await clearConversa(normalPhone);
@@ -932,6 +1157,18 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     return;
   }
 
+  // Mandou a foto da nota direto (sem escolher opção): registra como nota. Se o
+  // cliente está esperando para enviar etiqueta, mantém o comportamento antigo
+  // para não confundir etiqueta com nota.
+  if (mediaUrl && ['image', 'document'].includes(String(tipo || '').toLowerCase()) && ['idle', 'menu'].includes(estado)) {
+    const pedidosAtivos = await getPedidosAtivos(clienteCadastrado.id);
+    if (!pedidosAtivos.some(p => p.status === 'aguardando_etiqueta')) {
+      saveUserMsg(normalPhone, bodyNorm || '[nota enviada]');
+      await receberNotaPorFoto(normalPhone, { mediaUrl, mimeType, rawContent });
+      return;
+    }
+  }
+
   // Fluxos ativos
   if (estado.startsWith('flow1_'))         { await handleFlow1(normalPhone, estado, bodyNorm, mediaUrl, mimeType, rawContent); return; }
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
@@ -942,6 +1179,24 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     saveUserMsg(normalPhone, bodyNorm);
     await executarComandoMenu(normalPhone, clienteCadastrado, bodyNorm);
     return;
+  }
+
+  // Cumprimento de cliente cadastrado ("oi", "bom dia"): vai direto ao ponto,
+  // sem o menu. (Quem está com etiqueta pendente continua vendo o menu.)
+  if (!mediaUrl && ['idle', 'menu'].includes(estado) && ehSaudacao(bodyNorm)) {
+    const pedidosAtivos = await getPedidosAtivos(clienteCadastrado.id);
+    if (!pedidosAtivos.some(p => p.status === 'aguardando_etiqueta')) {
+      saveUserMsg(normalPhone, bodyNorm);
+      const primeiroNome = String(clienteCadastrado.nome || '').trim().split(/\s+/)[0];
+      const ola = primeiroNome ? `Olá, ${primeiroNome}! 👋` : 'Olá! 👋';
+      const corpo = (await estaAceitandoNotas())
+        ? 'Pode enviar sua nota fiscal por aqui (foto, print ou PDF).'
+        : MSG_FORA_DO_CORTE;
+      const texto = `${ola} ${corpo}\n\nPara outras opções, digite *menu*.`;
+      await sendText(normalPhone, texto, true);
+      appendHistorico(normalPhone, 'assistant', texto);
+      return;
+    }
   }
 
   // Texto livre — Claude detecta intenção

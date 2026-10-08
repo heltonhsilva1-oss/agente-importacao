@@ -226,10 +226,10 @@ async function extrairProdutosNota(mediaUrl, webhookMimeType = null, rawContent 
           {
             type: 'text',
             text:
-              'Analise esta nota fiscal e extraia a lista de produtos comprados.\n' +
+              'Analise esta nota fiscal e extraia a loja/emitente, o vendedor (somente se constar na nota) e a lista de produtos comprados.\n' +
               'Retorne SOMENTE um JSON válido, sem nenhum texto antes ou depois:\n' +
-              '{"produtos":[{"descricao":"nome do produto","quantidade":1,"valor_unitario_usd":0.00}]}\n' +
-              'Se não conseguir ler um campo use null. Se não houver produtos retorne {"produtos":[]}.',
+              '{"loja":"nome da loja","vendedor":"nome do vendedor","produtos":[{"descricao":"nome do produto","quantidade":1,"valor_unitario_usd":0.00}]}\n' +
+              'Não invente loja nem vendedor: se não conseguir ler um campo use null. Se não houver produtos retorne "produtos":[].',
           },
         ],
       }],
