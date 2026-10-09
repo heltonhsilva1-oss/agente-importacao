@@ -8,10 +8,11 @@ const {
 } = require('../tipo-cliente');
 const { statusMensalidadeEfetivo } = require('../mensalidade');
 const { enviarAvisosViagemFree, reenviarFalhasViagemFree } = require('../aviso-viagem-free');
-const { montarPrevia, aplicarMigracao } = require('../migracao-tipo-cliente');
+const { montarPrevia, aplicarMigracao, alterarTipoCliente } = require('../migracao-tipo-cliente');
 const { aplicarTotaisConfiaveis } = require('../financeiro-free');
 const { getCobrancaPendente } = require('../pagamentos');
 const { snapshotPedidoFree } = require('../tabela-free');
+const { registrarTabelaFree } = require('../tabelas-free-store');
 
 const silencio = { logger: { info() {}, warn() {}, error() {} } };
 
@@ -59,7 +60,7 @@ test('classifica VIP, Free e não identificados sem mexer em ninguém', () => {
 
 function bancoMigracao() {
   return criarBanco({
-    'clientes/c1': { id: 1, nome: 'Vip Um', telefone: '11995715042' },
+    'clientes/c1': { id: 1, nome: 'Vip Um', telefone: '11995715042', status_vip: 'removido_inadimplencia' },
     'clientes/c2': { id: 2, nome: 'Free Dois', telefone: '(11) 91111-2222' },
     'clientes/c3': { id: 3, nome: 'Sem Fone', telefone: '' },
   });
@@ -99,6 +100,41 @@ test('migração só aplica com o hash da prévia, é idempotente e audita', asy
 test('grupo vazio aborta a migração: nunca classifica todos como Free', async () => {
   const db = bancoMigracao();
   await assert.rejects(montarPrevia({ db, buscarGrupo: async () => ({ participantes: [] }) }), /abortada/);
+});
+
+test('alteração manual só muda o cadastro depois de sincronizar o Grupo VIP', async () => {
+  const db = criarBanco({
+    'clientes/c1': { id: 1, nome: 'Cliente', telefone: '11995715042', tipo_cliente: 'free', status_vip: 'fora_grupo' },
+  });
+  const chamadas = [];
+  const resultado = await alterarTipoCliente({
+    db, clienteId: 1, para: 'vip', operacaoId: 'op-1', executadoPor: 'admin@x.com',
+    atualizarGrupo: async (jid, acao, telefones) => chamadas.push([jid, acao, telefones]),
+  });
+  assert.equal(resultado.status, 'concluida');
+  assert.equal(chamadas[0][1], 'add');
+  assert.deepEqual(chamadas[0][2], ['5511995715042']);
+  assert.equal(db.docs.get('clientes/c1').tipo_cliente, 'vip');
+  assert.equal(db.docs.get('clientes/c1').status_vip, 'ativo');
+  assert.ok([...db.docs.keys()].some(k => k.startsWith('historico_tipo_cliente/')));
+
+  const repetida = await alterarTipoCliente({
+    db, clienteId: 1, para: 'vip', operacaoId: 'op-1', atualizarGrupo: async () => { throw new Error('não deve chamar'); },
+  });
+  assert.equal(repetida.repetida, true);
+});
+
+test('falha da UAZAPI preserva o tipo anterior do cliente', async () => {
+  const db = criarBanco({
+    'clientes/c1': { id: 1, nome: 'Cliente', telefone: '11995715042', tipo_cliente: 'vip', status_vip: 'ativo' },
+  });
+  await assert.rejects(alterarTipoCliente({
+    db, clienteId: 1, para: 'free', operacaoId: 'op-falha',
+    atualizarGrupo: async () => { throw new Error('UAZAPI indisponível'); },
+  }), /sincronizar/i);
+  assert.equal(db.docs.get('clientes/c1').tipo_cliente, 'vip');
+  assert.equal(db.docs.get('clientes/c1').status_vip, 'ativo');
+  assert.equal(db.docs.get('alteracoes_tipo_cliente/op-falha').status, 'falha');
 });
 
 // ── mensalidade ──────────────────────────────────────────────────────────────
@@ -271,6 +307,7 @@ test('backend aceita pedido de promoção (tabela editada) e barra valor adulter
   t2.comissao_minima_unitaria = 5;
   t2.travessia_unitaria = 5;
   t2.categorias.iphone_lacrado.bandas[0].faixas[0].valor = 200;
+  assert.equal(registrarTabelaFree(t2), true);
   const promo = snapshotPedidoFree({
     id: 3, cliente_id: 1, viagem_id: 7, cotacao_dolar: 5, status: 'aguardando_pgto_travessia',
     produtos: [{ descricao: 'iPhone', quantidade: 2, valor_unitario_usd: 900, categoria_free: 'iphone_lacrado' }],

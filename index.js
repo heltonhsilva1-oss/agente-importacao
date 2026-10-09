@@ -32,6 +32,7 @@ const { setupAdminNotas } = require('./admin-notas');
 const { setupMigracaoTipoCliente } = require('./migracao-tipo-cliente');
 const { setupListeners } = require('./notificacoes');
 const { setupAgendamentos } = require('./agendamentos');
+const { setupTabelasFreeStore } = require('./tabelas-free-store');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -42,6 +43,7 @@ setupPortal(app);
 setupMercadoPago(app);
 setupAdminNotas(app);
 setupMigracaoTipoCliente(app);
+setupTabelasFreeStore();
 
 // Listeners Firestore em tempo real (notificações automáticas de status)
 setupListeners();
