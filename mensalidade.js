@@ -41,4 +41,17 @@ function statusMensalidadeEfetivo(cliente, hoje = hojeSaoPauloYMD()) {
   return diasParaVencimento(dia, hoje) < 0 ? 'vencida' : 'pendente';
 }
 
-module.exports = { hojeSaoPauloYMD, diasParaVencimento, chaveDataSaoPaulo, statusMensalidadeEfetivo };
+// Indica quando o atendimento já deve aceitar PAGAR/SAIR. No próprio dia do
+// vencimento o aviso oferece essas opções, embora o status ainda seja
+// "pendente" até o dia seguinte.
+function mensalidadeEmCobranca(cliente, hoje = hojeSaoPauloYMD()) {
+  const status = statusMensalidadeEfetivo(cliente, hoje);
+  if (status === 'paga' || status === 'isento') return false;
+  const dia = parseInt(cliente?.data_vencimento_mensalidade, 10);
+  return !isNaN(dia) && diasParaVencimento(dia, hoje) <= 0;
+}
+
+module.exports = {
+  hojeSaoPauloYMD, diasParaVencimento, chaveDataSaoPaulo,
+  statusMensalidadeEfetivo, mensalidadeEmCobranca,
+};

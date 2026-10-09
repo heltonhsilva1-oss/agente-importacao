@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { diasParaVencimento, statusMensalidadeEfetivo } = require('../mensalidade');
+const { diasParaVencimento, statusMensalidadeEfetivo, mensalidadeEmCobranca } = require('../mensalidade');
 const { mensagemMensalidadeVip } = require('../agendamentos');
 const { readFileSync } = require('node:fs');
 
@@ -21,6 +21,25 @@ test('cobra durante os cinco dias posteriores ao vencimento com PAGAR e SAIR', (
 test('pagamento do mês anterior não mantém a mensalidade paga', () => {
   const cliente = { status_mensalidade: 'paga', data_pagamento_mensalidade: '2026-09-05', data_vencimento_mensalidade: 5 };
   assert.equal(statusMensalidadeEfetivo(cliente, { year: 2026, month: 10, day: 7 }), 'vencida');
+});
+
+test('PAGAR é aceito no próprio dia do vencimento oferecido pelo aviso', () => {
+  const cliente = {
+    tipo_cliente: 'vip', status_mensalidade: 'paga',
+    data_pagamento_mensalidade: '2026-09-09', data_vencimento_mensalidade: 9,
+  };
+  assert.equal(statusMensalidadeEfetivo(cliente, { year: 2026, month: 10, day: 9 }), 'pendente');
+  assert.equal(mensalidadeEmCobranca(cliente, { year: 2026, month: 10, day: 9 }), true);
+});
+
+test('mensalidade paga no mês e cliente Free não entram em cobrança', () => {
+  const paga = {
+    tipo_cliente: 'vip', status_mensalidade: 'paga',
+    data_pagamento_mensalidade: '2026-10-09', data_vencimento_mensalidade: 9,
+  };
+  assert.equal(mensalidadeEmCobranca(paga, { year: 2026, month: 10, day: 9 }), false);
+  assert.equal(mensalidadeEmCobranca({ ...paga, tipo_cliente: 'free', status_mensalidade: 'pendente' },
+    { year: 2026, month: 10, day: 10 }), false);
 });
 
 test('vencimento 31 é ajustado ao último dia de mês curto', () => {

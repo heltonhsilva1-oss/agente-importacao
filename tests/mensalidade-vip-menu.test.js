@@ -14,6 +14,7 @@ test('cliente vencido pode escolher pagar ou sair e o operador é avisado', () =
   assert.match(menu, /escolheu \*PAGAR\*/);
   assert.match(menu, /solicitou \*SAIR DO GRUPO VIP\*/);
   assert.match(menu, /createVipPixCharge/);
+  assert.match(menu, /mensalidadeEmCobranca\(clienteCadastrado\)/);
   assert.match(menu, /confirmação será automática/);
   assert.match(menu, /updateGroupParticipants/);
 });
