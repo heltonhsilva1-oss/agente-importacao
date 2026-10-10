@@ -37,9 +37,9 @@ function montar({ extracao, pedidosAtivos = [], viagem, idadeConversaMs = 0 } = 
       horarioCorte: '23:59', diaCorte: 6,
       lojasPadronizadas: [{ id: 'atn', nomeOficial: 'ATN', aliases: ['atn'] }],
     }),
-    getViagemMaisRecente: async () => viagem ?? {
+    getViagens: async () => [viagem ?? {
       id: 1, status: 'em_andamento', data_saida: data(-1), data_retorno: data(5),
-    },
+    }],
   };
   const menu = carregarComStubs('menu.js', {
     './logger': silencio,

@@ -275,6 +275,12 @@ async function getConfiguracoes() {
   return snap.exists ? snap.data() : {};
 }
 
+// Todas as viagens (poucas): quem decide qual está recebendo notas é o menu.
+async function getViagens() {
+  const snap = await db().collection('viagens').get();
+  return snap.docs.map(doc => doc.data());
+}
+
 // Viagem com o maior id = criada por último (ids são sequenciais, ver nextId no frontend).
 // Usada para saber se a viagem atual foi aberta depois do último corte configurado.
 async function getViagemMaisRecente() {
@@ -498,6 +504,7 @@ module.exports = {
   confirmarPagamentoPedido,
   getConfiguracoes,
   getViagemMaisRecente,
+  getViagens,
   addPendentePagamento,
   getPendentesPagamento,
   reservarPendente,

@@ -12,7 +12,7 @@ const {
   getPendentesPagamento, reservarPendente,
   finalizarPendente, devolverPendenteFila, confirmarPagamentoPedido,
   appendHistorico, getHistorico, criarRascunhoPedido,
-  getConfiguracoes, getViagemMaisRecente,
+  getConfiguracoes, getViagens,
 } = require('./firestore');
 const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
@@ -204,8 +204,46 @@ function calcCorteDaViagem(viagem, horarioCorte, diaCorte) {
   );
 }
 
+// ── janela de notas da viagem ────────────────────────────────────────────────
+// Definida pelo operador na própria viagem: data/hora de abertura e data/hora
+// de corte (horário de Brasília). Viagens antigas, sem data de corte, seguem a
+// regra anterior (corte semanal derivado da data de retorno).
+
+function partesData(ymd) {
+  const [y, m, d] = String(ymd || '').split('-').map(Number);
+  return y && m && d ? { y, m, d } : null;
+}
+
+function partesHora(hhmm, padrao) {
+  const [h, mi] = String(hhmm || padrao).split(':');
+  return { h: parseInt(h, 10) || 0, mi: parseInt(mi, 10) || 0 };
+}
+
+// { abre: Date|null, corte: Date|null } a partir dos campos da viagem.
+function janelaDeNotas(viagem, cfg = {}) {
+  const dc = partesData(viagem?.data_corte);
+  const da = partesData(viagem?.data_abertura);
+  let corte = null;
+  let abre = null;
+  if (dc) {
+    const h = partesHora(viagem.hora_corte, cfg.horarioCorte || '23:59');
+    corte = instanteSaoPaulo(dc.y, dc.m, dc.d, h.h, h.mi);
+  }
+  if (da) {
+    const h = partesHora(viagem.hora_abertura, '00:00');
+    abre = instanteSaoPaulo(da.y, da.m, da.d, h.h, h.mi);
+  }
+  return { abre, corte };
+}
+
 function viagemAceitaNotas(viagem, cfg, instanteAgora = new Date()) {
   if (!viagem || (viagem.status && viagem.status !== 'em_andamento')) return false;
+
+  if (viagem.data_corte) {
+    const { abre, corte } = janelaDeNotas(viagem, cfg);
+    if (abre && instanteAgora < abre) return false;
+    return !corte || instanteAgora <= corte;
+  }
 
   const corteDaViagem = calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte);
   if (corteDaViagem) return instanteAgora <= corteDaViagem;
@@ -215,9 +253,53 @@ function viagemAceitaNotas(viagem, cfg, instanteAgora = new Date()) {
   return viagemPertenceAoCicloAtual(viagem, ultimoCorte);
 }
 
-async function estaAceitandoNotas() {
-  const [cfg, viagem] = await Promise.all([getConfiguracoes(), getViagemMaisRecente()]);
-  return viagemAceitaNotas(viagem, cfg);
+function formatarDataHora(instante) {
+  const p = componentesSaoPaulo(instante);
+  const dois = n => String(n).padStart(2, '0');
+  return `${dois(p.day)}/${dois(p.month)} às ${dois(p.hour)}:${dois(p.minute)}`;
+}
+
+// Escolhe a viagem que recebe notas: entre as "em andamento", a que está dentro
+// da janela (a de maior número se houver mais de uma); se nenhuma está, a de
+// maior número, só para explicar ao cliente por que não aceita.
+function escolherViagemParaNotas(viagens, cfg, instanteAgora = new Date()) {
+  const abertas = (viagens || [])
+    .filter(v => !v.status || v.status === 'em_andamento')
+    .sort((a, b) => Number(b.id) - Number(a.id));
+  return abertas.find(v => viagemAceitaNotas(v, cfg, instanteAgora)) || abertas[0] || null;
+}
+
+// { aceita, mensagem } — a mensagem diz ao cliente exatamente o motivo.
+function avaliarJanelaNotas(viagens, cfg, instanteAgora = new Date()) {
+  const viagem = escolherViagemParaNotas(viagens, cfg, instanteAgora);
+  if (viagem && viagemAceitaNotas(viagem, cfg, instanteAgora)) return { aceita: true, viagem, mensagem: '' };
+
+  if (!viagem) {
+    return {
+      aceita: false, viagem: null,
+      mensagem: 'No momento não há viagem aberta para receber notas. Assim que a próxima abrir, avisamos por aqui.',
+    };
+  }
+  if (viagem.data_corte) {
+    const { abre, corte } = janelaDeNotas(viagem, cfg);
+    if (abre && instanteAgora < abre) {
+      return {
+        aceita: false, viagem,
+        mensagem: `A próxima viagem abre para notas em ${formatarDataHora(abre)}. Assim que abrir, é só enviar sua nota por aqui.`,
+      };
+    }
+    return {
+      aceita: false, viagem,
+      mensagem: `O corte desta viagem foi em ${formatarDataHora(corte)}, então não estamos mais recebendo notas. ` +
+        'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.',
+    };
+  }
+  return { aceita: false, viagem, mensagem: MSG_FORA_DO_CORTE };
+}
+
+async function janelaDeNotasAgora() {
+  const [cfg, viagens] = await Promise.all([getConfiguracoes(), getViagens()]);
+  return avaliarJanelaNotas(viagens, cfg);
 }
 
 // Mensagem que é só um cumprimento ("oi", "bom dia", "olá, tudo bem?").
@@ -242,8 +324,9 @@ const MSG_FORA_DO_CORTE =
   'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.';
 
 async function iniciarFlow1(phone) {
-  if (!(await estaAceitandoNotas())) {
-    await sendText(phone, MSG_FORA_DO_CORTE, true);
+  const janela = await janelaDeNotasAgora();
+  if (!janela.aceita) {
+    await sendText(phone, janela.mensagem, true);
     return;
   }
 
@@ -496,9 +579,10 @@ function lerNota(phone, n, { mediaUrl, mimeType, rawContent }) {
 // Toda foto vira uma nota: numera, confirma (agrupado) e lê em paralelo.
 function receberNotaPorFoto(phone, { mediaUrl, mimeType, rawContent }) {
   return emFila(phone, async () => {
-    if (!(await estaAceitandoNotas())) {
+    const janela = await janelaDeNotasAgora();
+    if (!janela.aceita) {
       await clearConversa(phone);
-      await sendText(phone, MSG_FORA_DO_CORTE, true);
+      await sendText(phone, janela.mensagem, true);
       return;
     }
     const conv = await getConversa(phone);
@@ -1189,9 +1273,10 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
       saveUserMsg(normalPhone, bodyNorm);
       const primeiroNome = String(clienteCadastrado.nome || '').trim().split(/\s+/)[0];
       const ola = primeiroNome ? `Olá, ${primeiroNome}! 👋` : 'Olá! 👋';
-      const corpo = (await estaAceitandoNotas())
+      const janela = await janelaDeNotasAgora();
+      const corpo = janela.aceita
         ? 'Pode enviar sua nota fiscal por aqui (foto, print ou PDF).'
-        : MSG_FORA_DO_CORTE;
+        : janela.mensagem;
       const texto = `${ola} ${corpo}\n\nPara outras opções, digite *menu*.`;
       await sendText(normalPhone, texto, true);
       appendHistorico(normalPhone, 'assistant', texto);
@@ -1232,6 +1317,9 @@ module.exports = {
   calcUltimoCorte,
   dataReferenciaCicloViagem,
   viagemAceitaNotas,
+  janelaDeNotas,
+  avaliarJanelaNotas,
+  escolherViagemParaNotas,
   viagemPertenceAoCicloAtual,
   estadoExpiraPorInatividade,
 };
