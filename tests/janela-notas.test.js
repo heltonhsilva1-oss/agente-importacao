@@ -38,10 +38,17 @@ test('viagem concluída nunca aceita, mesmo dentro da janela', () => {
   assert.equal(viagemAceitaNotas(viagem, cfg, sp('2026-10-01T10:00:00')), false);
 });
 
-test('viagem antiga sem data de corte continua usando a regra anterior', () => {
-  const viagem = { id: 9, status: 'em_andamento', data_saida: '2026-09-03', data_retorno: '2026-09-11' };
-  assert.equal(viagemAceitaNotas(viagem, { horarioCorte: '17:00', diaCorte: 5 }, sp('2026-09-08T12:00:00')), true);
-  assert.equal(viagemAceitaNotas(viagem, { horarioCorte: '17:00', diaCorte: 5 }, sp('2026-09-11T17:01:00')), false);
+test('viagem sem data de corte: vale a data de retorno informada, sem regra de sexta', () => {
+  // retorno no sábado 10/10: a sexta às 11h NÃO fecha mais a viagem
+  const viagem = { id: 9, status: 'em_andamento', data_saida: '2026-10-05', data_retorno: '2026-10-10' };
+  const cfgSexta = { horarioCorte: '11:00', diaCorte: 5 };
+  assert.equal(viagemAceitaNotas(viagem, cfgSexta, sp('2026-10-09T15:00:00')), true, 'sexta à tarde');
+  assert.equal(viagemAceitaNotas(viagem, cfgSexta, sp('2026-10-10T09:00:00')), true, 'sábado de manhã');
+  assert.equal(viagemAceitaNotas(viagem, cfgSexta, sp('2026-10-10T23:59:30')), true);
+  assert.equal(viagemAceitaNotas(viagem, cfgSexta, sp('2026-10-11T00:00:01')), false, 'só depois do dia de retorno');
+  assert.match(avaliarJanelaNotas([viagem], cfgSexta, sp('2026-10-11T10:00:00')).mensagem, /terminou em 10\/10/);
+  // sem retorno nem corte: aceita enquanto estiver em andamento
+  assert.equal(viagemAceitaNotas({ id: 10, status: 'em_andamento' }, cfgSexta, sp('2026-10-20T10:00:00')), true);
 });
 
 test('mensagens dizem o motivo exato (abre em / corte foi em / sem viagem)', () => {

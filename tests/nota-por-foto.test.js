@@ -283,7 +283,7 @@ test('depois do corte da viagem a foto não vira nota', async () => {
     viagem: { id: 1, status: 'em_andamento', data_saida: data(-10), data_retorno: data(-3) },
   });
   await foto(t);
-  assert.match(cliente(t.enviados)[0], /não estamos mais aceitando notas/);
+  assert.match(cliente(t.enviados)[0], /Esta viagem terminou em 07\/10, então não estamos mais recebendo notas/);
   assert.equal(t.rascunhos.length, 0);
 });
 
@@ -363,7 +363,7 @@ test('"oi" depois do corte da viagem avisa que não aceita mais notas', async ()
   });
   await texto(t, 'oi');
   const resposta = cliente(t.enviados).at(-1);
-  assert.match(resposta, /Olá, Ana! 👋 No momento não estamos mais aceitando notas/);
+  assert.match(resposta, /Olá, Ana! 👋 Esta viagem terminou em 07\/10/);
   assert.doesNotMatch(resposta, /Pode enviar sua nota/);
 });
 

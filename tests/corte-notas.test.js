@@ -10,7 +10,7 @@ const {
   viagemPertenceAoCicloAtual,
 } = require('../menu');
 
-test('viagem atual permanece aberta até o corte associado à data de retorno', () => {
+test('viagem sem corte definido permanece aberta até o fim do dia de retorno', () => {
   const viagem = {
     id: 9,
     status: 'em_andamento',
@@ -21,7 +21,9 @@ test('viagem atual permanece aberta até o corte associado à data de retorno', 
 
   assert.equal(calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte).toISOString(), '2026-09-11T20:00:00.000Z');
   assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-08T15:00:00.000Z')), true);
-  assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-11T20:00:01.000Z')), false);
+  // sem corte definido na viagem vale a data de retorno informada (até o fim do dia)
+  assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-11T20:00:01.000Z')), true);
+  assert.equal(viagemAceitaNotas(viagem, cfg, new Date('2026-09-12T03:00:00.000Z')), false);
 });
 
 test('retorno no sábado usa o corte configurado da sexta-feira anterior', () => {

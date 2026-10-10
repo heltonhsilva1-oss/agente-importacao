@@ -206,8 +206,8 @@ function calcCorteDaViagem(viagem, horarioCorte, diaCorte) {
 
 // ── janela de notas da viagem ────────────────────────────────────────────────
 // Definida pelo operador na própria viagem: data/hora de abertura e data/hora
-// de corte (horário de Brasília). Viagens antigas, sem data de corte, seguem a
-// regra anterior (corte semanal derivado da data de retorno).
+// de corte (horário de Brasília). Viagens sem data de corte valem até o fim do
+// dia da data de retorno (sem dia fixo da semana).
 
 function partesData(ymd) {
   const [y, m, d] = String(ymd || '').split('-').map(Number);
@@ -245,12 +245,17 @@ function viagemAceitaNotas(viagem, cfg, instanteAgora = new Date()) {
     return !corte || instanteAgora <= corte;
   }
 
-  const corteDaViagem = calcCorteDaViagem(viagem, cfg.horarioCorte, cfg.diaCorte);
-  if (corteDaViagem) return instanteAgora <= corteDaViagem;
+  // Viagem sem data de corte definida: vale a data de retorno que o operador
+  // informou (até o fim desse dia, sem regra de "sexta"); sem retorno, aceita
+  // enquanto a viagem estiver em andamento.
+  const fimDoRetorno = fimDoDiaDeRetorno(viagem);
+  return fimDoRetorno ? instanteAgora <= fimDoRetorno : true;
+}
 
-  // Compatibilidade com viagens antigas sem data de retorno.
-  const ultimoCorte = calcUltimoCorte(cfg.horarioCorte, cfg.diaCorte, instanteAgora);
-  return viagemPertenceAoCicloAtual(viagem, ultimoCorte);
+function fimDoDiaDeRetorno(viagem) {
+  const dr = partesData(viagem?.data_retorno);
+  if (!dr) return null;
+  return new Date(instanteSaoPaulo(dr.y, dr.m, dr.d, 23, 59).getTime() + 59 * 1000);
 }
 
 function formatarDataHora(instante) {
@@ -294,7 +299,15 @@ function avaliarJanelaNotas(viagens, cfg, instanteAgora = new Date()) {
         'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.',
     };
   }
-  return { aceita: false, viagem, mensagem: MSG_FORA_DO_CORTE };
+  const fim = fimDoDiaDeRetorno(viagem);
+  const dr = partesData(viagem.data_retorno);
+  return {
+    aceita: false, viagem,
+    mensagem: fim && dr
+      ? `Esta viagem terminou em ${String(dr.d).padStart(2, '0')}/${String(dr.m).padStart(2, '0')}, então não estamos mais recebendo notas. ` +
+        'Aguarde a próxima viagem abrir e envie sua nota assim que avisarmos por aqui.'
+      : MSG_FORA_DO_CORTE,
+  };
 }
 
 async function janelaDeNotasAgora() {
