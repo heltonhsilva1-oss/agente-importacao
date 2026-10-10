@@ -205,9 +205,10 @@ function calcCorteDaViagem(viagem, horarioCorte, diaCorte) {
 }
 
 // ── janela de notas da viagem ────────────────────────────────────────────────
-// Definida pelo operador na própria viagem: data/hora de abertura e data/hora
-// de corte (horário de Brasília). Viagens sem data de corte valem até o fim do
-// dia da data de retorno (sem dia fixo da semana).
+// Uma regra só (bot e sistema): a viagem em andamento recebe notas desde que é
+// criada (nesse momento os clientes são avisados) até o corte definido pelo
+// operador (data + hora, horário de Brasília). Sem corte definido, vale até o
+// fim do dia da data de retorno; sem retorno, enquanto estiver em andamento.
 
 function partesData(ymd) {
   const [y, m, d] = String(ymd || '').split('-').map(Number);
@@ -219,31 +220,19 @@ function partesHora(hhmm, padrao) {
   return { h: parseInt(h, 10) || 0, mi: parseInt(mi, 10) || 0 };
 }
 
-// { abre: Date|null, corte: Date|null } a partir dos campos da viagem.
-function janelaDeNotas(viagem, cfg = {}) {
+// Instante do corte da viagem (ou null se não houver data de corte).
+function corteDaViagem(viagem, cfg = {}) {
   const dc = partesData(viagem?.data_corte);
-  const da = partesData(viagem?.data_abertura);
-  let corte = null;
-  let abre = null;
-  if (dc) {
-    const h = partesHora(viagem.hora_corte, cfg.horarioCorte || '23:59');
-    corte = instanteSaoPaulo(dc.y, dc.m, dc.d, h.h, h.mi);
-  }
-  if (da) {
-    const h = partesHora(viagem.hora_abertura, '00:00');
-    abre = instanteSaoPaulo(da.y, da.m, da.d, h.h, h.mi);
-  }
-  return { abre, corte };
+  if (!dc) return null;
+  const h = partesHora(viagem.hora_corte, cfg.horarioCorte || '23:59');
+  return instanteSaoPaulo(dc.y, dc.m, dc.d, h.h, h.mi);
 }
 
 function viagemAceitaNotas(viagem, cfg, instanteAgora = new Date()) {
   if (!viagem || (viagem.status && viagem.status !== 'em_andamento')) return false;
 
-  if (viagem.data_corte) {
-    const { abre, corte } = janelaDeNotas(viagem, cfg);
-    if (abre && instanteAgora < abre) return false;
-    return !corte || instanteAgora <= corte;
-  }
+  const corte = corteDaViagem(viagem, cfg);
+  if (corte) return instanteAgora <= corte;
 
   // Viagem sem data de corte definida: vale a data de retorno que o operador
   // informou (até o fim desse dia, sem regra de "sexta"); sem retorno, aceita
@@ -264,9 +253,9 @@ function formatarDataHora(instante) {
   return `${dois(p.day)}/${dois(p.month)} às ${dois(p.hour)}:${dois(p.minute)}`;
 }
 
-// Escolhe a viagem que recebe notas: entre as "em andamento", a que está dentro
-// da janela (a de maior número se houver mais de uma); se nenhuma está, a de
-// maior número, só para explicar ao cliente por que não aceita.
+// Escolhe a viagem que recebe notas: entre as "em andamento", a que ainda está
+// dentro do corte (a de maior número se houver mais de uma); se nenhuma está, a
+// de maior número, só para explicar ao cliente por que não aceita.
 function escolherViagemParaNotas(viagens, cfg, instanteAgora = new Date()) {
   const abertas = (viagens || [])
     .filter(v => !v.status || v.status === 'em_andamento')
@@ -285,14 +274,8 @@ function avaliarJanelaNotas(viagens, cfg, instanteAgora = new Date()) {
       mensagem: 'No momento não há viagem aberta para receber notas. Assim que a próxima abrir, avisamos por aqui.',
     };
   }
-  if (viagem.data_corte) {
-    const { abre, corte } = janelaDeNotas(viagem, cfg);
-    if (abre && instanteAgora < abre) {
-      return {
-        aceita: false, viagem,
-        mensagem: `A próxima viagem abre para notas em ${formatarDataHora(abre)}. Assim que abrir, é só enviar sua nota por aqui.`,
-      };
-    }
+  const corte = corteDaViagem(viagem, cfg);
+  if (corte) {
     return {
       aceita: false, viagem,
       mensagem: `O corte desta viagem foi em ${formatarDataHora(corte)}, então não estamos mais recebendo notas. ` +
@@ -1330,7 +1313,7 @@ module.exports = {
   calcUltimoCorte,
   dataReferenciaCicloViagem,
   viagemAceitaNotas,
-  janelaDeNotas,
+  corteDaViagem,
   avaliarJanelaNotas,
   escolherViagemParaNotas,
   viagemPertenceAoCicloAtual,
