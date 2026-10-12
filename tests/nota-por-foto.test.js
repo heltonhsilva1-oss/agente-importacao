@@ -313,7 +313,7 @@ test('cliente esperando etiqueta: a foto não é tratada como nota', async () =>
   assert.ok(!cliente(t.enviados).some(x => /Recebi sua nota/.test(x)));
 });
 
-test('menu opção 1 avisa que confirmará a loja depois da leitura', async () => {
+test('sem menu, qualquer contato fora de etapa orienta o envio da nota', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await texto(t, '1');
   assert.match(cliente(t.enviados)[0], /Pode enviar a foto, print ou PDF/);
@@ -350,13 +350,12 @@ test('cliente some sem responder: as notas pendentes não se perdem, vão para c
 
 // ── cumprimento ──────────────────────────────────────────────────────────────
 
-test('"oi" de cliente cadastrado: convida a enviar a nota, sem o menu', async () => {
+test('"oi" de cliente cadastrado convida diretamente a enviar a nota', async () => {
   for (const saudacao of ['oi', 'Oi!', 'oiiii', 'Olá', 'bom dia', 'Boa tarde!', 'ola, tudo bem?', 'e aí', 'Opa tudo bem']) {
     const t = montar({ extracao: LEU_TUDO });
     await texto(t, saudacao);
     const resposta = cliente(t.enviados).at(-1);
     assert.match(resposta, /Olá, Ana! 👋 Pode enviar sua nota fiscal por aqui \(foto, print ou PDF\)/, saudacao);
-    assert.match(resposta, /digite \*menu\*/);
     assert.doesNotMatch(resposta, /1️⃣|Enviar nota fiscal|Ver status/, `${saudacao}: sem o menu`);
   }
 });
@@ -371,13 +370,15 @@ test('depois do "oi", a foto da nota funciona normalmente', async () => {
   assert.equal(t.rascunhos[0].nome_loja, 'ATN');
 });
 
-test('"menu" continua mostrando o menu; frases que não são só cumprimento seguem o fluxo normal', async () => {
+test('"menu" e texto livre direcionam ao recebimento de notas sem mostrar opções', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await texto(t, 'menu');
-  assert.match(cliente(t.enviados).at(-1), /Enviar nota fiscal/);
+  assert.match(cliente(t.enviados).at(-1), /Pode enviar a foto, print ou PDF/);
+  assert.doesNotMatch(cliente(t.enviados).at(-1), /1️⃣|Ver status do pedido/);
   const t2 = montar({ extracao: LEU_TUDO });
   await texto(t2, 'oi, quanto eu devo?');
-  assert.doesNotMatch(cliente(t2.enviados).at(-1) || '', /Pode enviar sua nota fiscal por aqui/);
+  assert.match(cliente(t2.enviados).at(-1), /Pode enviar a foto, print ou PDF/);
+  assert.doesNotMatch(cliente(t2.enviados).at(-1), /1️⃣|Ver status do pedido/);
 });
 
 test('"oi" depois do corte da viagem avisa que não aceita mais notas', async () => {
@@ -393,8 +394,8 @@ test('"oi" depois do corte da viagem avisa que não aceita mais notas', async ()
   assert.doesNotMatch(resposta, /Pode enviar sua nota/);
 });
 
-test('"oi" com etiqueta pendente mantém o comportamento antigo (menu)', async () => {
+test('"oi" com etiqueta pendente não exibe menu de opções', async () => {
   const t = montar({ extracao: LEU_TUDO, pedidosAtivos: [{ id: 9, status: 'aguardando_etiqueta' }] });
   await texto(t, 'oi');
-  assert.doesNotMatch(cliente(t.enviados).at(-1) || '', /Pode enviar sua nota fiscal por aqui/);
+  assert.doesNotMatch(cliente(t.enviados).at(-1) || '', /1️⃣|Ver status do pedido/);
 });

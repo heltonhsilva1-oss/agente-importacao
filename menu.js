@@ -3,7 +3,7 @@
 // Lógica e validações: regras fixas | Respostas em texto: Claude API
 
 const { logger } = require('./logger');
-const { responder, detectarIntencao, extrairProdutosNota } = require('./claude');
+const { responder, extrairProdutosNota } = require('./claude');
 const { salvarNotaRecebida } = require('./nota-storage');
 const {
   getConversa, setConversa, clearConversa,
@@ -84,21 +84,10 @@ function saveUserMsg(phone, body) {
   if (body?.trim()) appendHistorico(phone, 'user', body.trim());
 }
 
-// ── menu principal ────────────────────────────────────────────────────────────
+// ── orientação principal ──────────────────────────────────────────────────────
 
-async function showMenu(phone, clienteNome = '') {
-  const ctx = { estado: 'menu', clienteNome };
-  const instrucao = clienteNome
-    ? `Cumprimente ${clienteNome} e apresente as 6 opções do menu de atendimento de forma amigável.`
-    : 'Dê as boas-vindas e apresente as 6 opções do menu de atendimento de forma amigável.';
-  const fallback =
-    `Olá! Bem-vindo à *Kidex Importações*. 👋\n\n` +
-    `1️⃣ Enviar nota fiscal\n2️⃣ Ver status do pedido\n` +
-    `3️⃣ Ver o que devo\n4️⃣ Pagar taxa ou comissão\n` +
-    `5️⃣ Enviar etiqueta de postagem\n6️⃣ Falar com o operador\n\n` +
-    `Digite o número da opção.`;
-  await send(phone, instrucao, ctx, fallback, 250);
-  await setConversa(phone, { estado: 'menu', dados: {} });
+async function showMenu(phone) {
+  await iniciarFlow1(phone);
 }
 
 // ── flow 1: enviar nota fiscal ────────────────────────────────────────────────
@@ -1214,21 +1203,10 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   const estado   = conv2.estado || 'idle';
   const bodyNorm = (body || '').trim();
 
-  // Comando global "menu"
+  // O menu de opções foi removido. "menu" agora leva direto ao envio de notas.
   if (bodyNorm.toLowerCase() === 'menu') {
     saveUserMsg(normalPhone, bodyNorm);
-    await showMenu(normalPhone, clienteCadastrado.nome);
-    return;
-  }
-
-  // Estados de espera "leve" não devem travar o cliente se ele quiser começar
-  // outra coisa — ex: cliente preso esperando etiqueta de um pedido antigo,
-  // mas quer mandar nota de uma compra nova. Comando numérico funciona aqui
-  // como comando global, igual já funciona a partir do idle/menu.
-  const ESTADOS_COM_ESCAPE = ['flow4_etiqueta', 'flow4_comprovante'];
-  if (ESTADOS_COM_ESCAPE.includes(estado) && /^[1-6]$/.test(bodyNorm)) {
-    saveUserMsg(normalPhone, bodyNorm);
-    await executarComandoMenu(normalPhone, clienteCadastrado, bodyNorm);
+    await iniciarFlow1(normalPhone);
     return;
   }
 
@@ -1249,15 +1227,8 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   if (estado === 'flow2_selecao')          { await handleFlow2Selecao(normalPhone, bodyNorm); return; }
   if (estado.startsWith('flow4_'))        { await handleFlow4(normalPhone, estado, bodyNorm, mediaUrl); return; }
 
-  // Estado idle/menu — seleção numérica
-  if (/^[1-6]$/.test(bodyNorm)) {
-    saveUserMsg(normalPhone, bodyNorm);
-    await executarComandoMenu(normalPhone, clienteCadastrado, bodyNorm);
-    return;
-  }
-
   // Cumprimento de cliente cadastrado ("oi", "bom dia"): vai direto ao ponto,
-  // sem o menu. (Quem está com etiqueta pendente continua vendo o menu.)
+  // sem menu. Quem está numa etapa ativa é tratado pelo fluxo dessa etapa.
   if (!mediaUrl && ['idle', 'menu'].includes(estado) && ehSaudacao(bodyNorm)) {
     const pedidosAtivos = await getPedidosAtivos(clienteCadastrado.id);
     if (!pedidosAtivos.some(p => p.status === 'aguardando_etiqueta')) {
@@ -1268,40 +1239,22 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
       const corpo = janela.aceita
         ? 'Pode enviar sua nota fiscal por aqui (foto, print ou PDF).'
         : janela.mensagem;
-      const texto = `${ola} ${corpo}\n\nPara outras opções, digite *menu*.`;
+      const texto = `${ola} ${corpo}`;
       await sendText(normalPhone, texto, true);
       appendHistorico(normalPhone, 'assistant', texto);
       return;
     }
   }
 
-  // Texto livre — Claude detecta intenção
+  // Fora de uma etapa ativa, este canal orienta somente o envio de notas.
   saveUserMsg(normalPhone, bodyNorm);
-  if (bodyNorm.length > 2) {
-    const intencao = await detectarIntencao(bodyNorm);
-    if (intencao >= 1 && intencao <= 6) {
-      await handleMessage(normalPhone, 'text', String(intencao), null, null);
-      return;
-    }
-    const historico = await getHistorico(normalPhone);
-    const respostaLivre = await responder(
-      { estado, historico, extra: 'O cliente enviou uma mensagem fora dos fluxos esperados.' },
-      bodyNorm, 250
-    );
-    if (respostaLivre) {
-      await sendText(normalPhone, respostaLivre, true);
-      appendHistorico(normalPhone, 'assistant', respostaLivre);
-      return;
-    }
-  }
-
-  // Fallback
-  await showMenu(normalPhone, clienteCadastrado.nome);
+  await iniciarFlow1(normalPhone);
 }
 
 module.exports = {
   handleMessage,
   showMenu,
+  executarComandoMenu,
   parseComandoFila,
   formatarFila,
   calcCorteDaViagem,
