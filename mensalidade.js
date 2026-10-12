@@ -51,7 +51,17 @@ function mensalidadeEmCobranca(cliente, hoje = hojeSaoPauloYMD()) {
   return !isNaN(dia) && diasParaVencimento(dia, hoje) <= 0;
 }
 
+// O aviso preventivo é enviado três dias antes e já oferece PAGAR. Aceita o
+// pagamento nessa mesma janela, sem bloquear os demais fluxos do cliente.
+function mensalidadeDisponivelParaPagamento(cliente, hoje = hojeSaoPauloYMD()) {
+  const status = statusMensalidadeEfetivo(cliente, hoje);
+  if (status === 'paga' || status === 'isento') return false;
+  const dia = parseInt(cliente?.data_vencimento_mensalidade, 10);
+  if (isNaN(dia)) return false;
+  return diasParaVencimento(dia, hoje) <= 3;
+}
+
 module.exports = {
   hojeSaoPauloYMD, diasParaVencimento, chaveDataSaoPaulo,
-  statusMensalidadeEfetivo, mensalidadeEmCobranca,
+  statusMensalidadeEfetivo, mensalidadeEmCobranca, mensalidadeDisponivelParaPagamento,
 };

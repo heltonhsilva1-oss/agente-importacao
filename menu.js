@@ -17,7 +17,9 @@ const {
 const { sendText } = require('./uazapi');
 const { getCobrancaPendente } = require('./pagamentos');
 const { buildPortalLink } = require('./portal-access');
-const { statusMensalidadeEfetivo, mensalidadeEmCobranca } = require('./mensalidade');
+const {
+  statusMensalidadeEfetivo, mensalidadeEmCobranca, mensalidadeDisponivelParaPagamento,
+} = require('./mensalidade');
 const { aplicarConversao, getTipoCliente, grupoVipJid } = require('./tipo-cliente');
 const { padronizarNomeLoja } = require('./lojas');
 
@@ -1143,7 +1145,9 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
   const retornoVipRemovido = getTipoCliente(clienteCadastrado) === 'free'
     && clienteCadastrado.status_vip === 'removido_inadimplencia'
     && respostaVip === 'PAGAR';
-  if (mensalidadeEmCobranca(clienteCadastrado) || retornoVipRemovido) {
+  const pagamentoVipAntecipado = respostaVip === 'PAGAR'
+    && mensalidadeDisponivelParaPagamento(clienteCadastrado);
+  if (mensalidadeEmCobranca(clienteCadastrado) || retornoVipRemovido || pagamentoVipAntecipado) {
     logger.info(`[menu] Bloqueado por mensalidade vencida: ${normalPhone}`);
     if (respostaVip === 'PAGAR' || respostaVip === '1') {
       const config = await getConfiguracoes();

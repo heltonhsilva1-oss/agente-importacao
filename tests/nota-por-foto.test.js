@@ -278,12 +278,17 @@ test('formato não suportado: pede reenvio', async () => {
 });
 
 test('depois do corte da viagem a foto não vira nota', async () => {
+  const dataRetorno = data(-3);
+  const [, mesRetorno, diaRetorno] = dataRetorno.split('-');
   const t = montar({
     extracao: LEU_TUDO,
-    viagem: { id: 1, status: 'em_andamento', data_saida: data(-10), data_retorno: data(-3) },
+    viagem: { id: 1, status: 'em_andamento', data_saida: data(-10), data_retorno: dataRetorno },
   });
   await foto(t);
-  assert.match(cliente(t.enviados)[0], /Esta viagem terminou em 07\/10, então não estamos mais recebendo notas/);
+  assert.match(
+    cliente(t.enviados)[0],
+    new RegExp(`Esta viagem terminou em ${diaRetorno}/${mesRetorno}, então não estamos mais recebendo notas`),
+  );
   assert.equal(t.rascunhos.length, 0);
 });
 
@@ -357,13 +362,15 @@ test('"menu" continua mostrando o menu; frases que não são só cumprimento seg
 });
 
 test('"oi" depois do corte da viagem avisa que não aceita mais notas', async () => {
+  const dataRetorno = data(-3);
+  const [, mesRetorno, diaRetorno] = dataRetorno.split('-');
   const t = montar({
     extracao: LEU_TUDO,
-    viagem: { id: 1, status: 'em_andamento', data_saida: data(-10), data_retorno: data(-3) },
+    viagem: { id: 1, status: 'em_andamento', data_saida: data(-10), data_retorno: dataRetorno },
   });
   await texto(t, 'oi');
   const resposta = cliente(t.enviados).at(-1);
-  assert.match(resposta, /Olá, Ana! 👋 Esta viagem terminou em 07\/10/);
+  assert.match(resposta, new RegExp(`Olá, Ana! 👋 Esta viagem terminou em ${diaRetorno}/${mesRetorno}`));
   assert.doesNotMatch(resposta, /Pode enviar sua nota/);
 });
 
