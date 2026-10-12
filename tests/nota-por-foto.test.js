@@ -74,19 +74,20 @@ const NADA = { produtos: PRODUTOS, loja: null, vendedor: null, arquivo: ARQUIVO 
 
 // ── uma nota ─────────────────────────────────────────────────────────────────
 
-test('leu loja e vendedor: não pergunta nada, registra e resume para o cliente', async () => {
+test('mesmo lendo loja e vendedor, confirma a loja com o cliente', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await foto(t);
-  await esperar(() => t.rascunhos.length === 1 && cliente(t.enviados).length >= 2);
+  await esperar(() => perguntando(t) === 1);
   const msgs = cliente(t.enviados);
   assert.match(msgs[0], /Recebi sua nota ✅ Já estou lendo/);
-  assert.match(msgs[1], /Anotei ✅ Nota 1: \*ATN\* · João\. Já enviei para conferência/);
-  assert.match(msgs[1], /PRONTO/);
+  assert.match(msgs[1], /Identifiquei o vendedor como \*João\*/);
+  assert.match(msgs[1], /qual é o \*nome da loja\*/);
+  await texto(t, 'atn');
+  await esperar(() => t.rascunhos.length === 1);
   assert.equal(t.rascunhos[0].nome_loja, 'ATN'); // padronizada pelas regras de loja
   assert.equal(t.rascunhos[0].nome_vendedor, 'João');
   assert.equal(t.rascunhos[0].extracao_status, 'ok');
   assert.equal(t.rascunhos[0].produtos.length, 2);
-  assert.ok(!msgs.some(x => /Pode me dizer|Qual é/.test(x)), 'não pergunta nada');
   assert.ok(t.enviados.some(([p, x]) => p === OPERADOR && /Loja: ATN/.test(x)));
 });
 
@@ -94,7 +95,7 @@ test('não leu nem loja nem vendedor: pergunta os dois numa mensagem só', async
   const t = montar({ extracao: NADA });
   await foto(t);
   await esperar(() => perguntando(t) === 1);
-  assert.match(cliente(t.enviados).at(-1), /Não consegui ler a \*loja\* e o \*vendedor\*/);
+  assert.match(cliente(t.enviados).at(-1), /Qual é o \*nome da loja\*/);
   assert.equal(t.rascunhos.length, 0, 'aguarda a resposta');
 
   await texto(t, 'atn - João');
@@ -122,12 +123,12 @@ test('formatos aceitos quando precisa perguntar os dois', async () => {
   }
 });
 
-test('leu só a loja: pergunta apenas o vendedor', async () => {
+test('ignora a loja lida e pede loja e vendedor quando não identificou o vendedor', async () => {
   const t = montar({ extracao: SO_LOJA });
   await foto(t);
   await esperar(() => perguntando(t) === 1);
-  assert.match(cliente(t.enviados).at(-1), /Li a loja \*Star Company\*, mas não consegui ler o \*vendedor\*/);
-  await texto(t, 'Carlos');
+  assert.match(cliente(t.enviados).at(-1), /Qual é o \*nome da loja\*/);
+  await texto(t, 'Star Company - Carlos');
   await esperar(() => t.rascunhos.length === 1);
   assert.equal(t.rascunhos[0].nome_loja, 'Star Company');
   assert.equal(t.rascunhos[0].nome_vendedor, 'Carlos');
@@ -137,7 +138,8 @@ test('leu só o vendedor: pergunta apenas a loja', async () => {
   const t = montar({ extracao: SO_VENDEDOR });
   await foto(t);
   await esperar(() => perguntando(t) === 1);
-  assert.match(cliente(t.enviados).at(-1), /Li o vendedor \(\*Maria\*\), mas não consegui ler a \*loja\*/);
+  assert.match(cliente(t.enviados).at(-1), /Identifiquei o vendedor como \*Maria\*/);
+  assert.match(cliente(t.enviados).at(-1), /qual é o \*nome da loja\*/);
   await texto(t, 'atn');
   await esperar(() => t.rascunhos.length === 1);
   assert.equal(t.rascunhos[0].nome_loja, 'ATN');
@@ -155,40 +157,43 @@ test('resposta sem sentido pede de novo', async () => {
 
 // ── várias notas de uma vez ──────────────────────────────────────────────────
 
-test('3 fotos de uma vez, todas lidas: 1 confirmação, 1 resumo com as 3 notas, nenhuma perdida', async () => {
+test('3 fotos de uma vez: confirma a loja de cada uma, na ordem, sem perder notas', async () => {
   const lojas = { 'https://midia/1': ['atn', 'João'], 'https://midia/2': ['Star Company', 'Maria'], 'https://midia/3': ['atn', 'Pedro'] };
   const t = montar({ extracao: url => ({ produtos: PRODUTOS, loja: lojas[url][0], vendedor: lojas[url][1], arquivo: ARQUIVO }) });
   await Promise.all([foto(t, 1), foto(t, 2), foto(t, 3)]);
-  await esperar(() => t.rascunhos.length === 3 && cliente(t.enviados).length >= 2);
+  await esperar(() => perguntando(t) === 1);
+  assert.match(cliente(t.enviados).at(-1), /Nota 1: identifiquei o vendedor como \*João\*/);
+  await texto(t, 'atn');
+  await esperar(() => perguntando(t) === 2);
+  await texto(t, 'Star Company');
+  await esperar(() => perguntando(t) === 3);
+  await texto(t, 'atn');
+  await esperar(() => t.rascunhos.length === 3);
 
   const msgs = cliente(t.enviados);
-  assert.equal(msgs.length, 2, 'só duas mensagens ao cliente');
   assert.match(msgs[0], /Recebi 3 notas ✅ Já estou lendo/);
-  assert.match(msgs[1], /Anotei ✅ 3 notas já enviadas para conferência/);
-  assert.match(msgs[1], /• Nota 1: \*ATN\* · João/);
-  assert.match(msgs[1], /• Nota 2: \*Star Company\* · Maria/);
-  assert.match(msgs[1], /• Nota 3: \*ATN\* · Pedro/);
-  assert.match(msgs[1], /PRONTO/);
   assert.deepEqual(t.rascunhos.map(r => r.nome_vendedor).sort(), ['João', 'Maria', 'Pedro']);
+  assert.deepEqual(t.rascunhos.map(r => r.nome_loja), ['ATN', 'Star Company', 'ATN']);
   assert.equal(t.conversa().dados.pendentes.length, 0);
 });
 
-test('3 fotos, uma sem dados: registra as 2 lidas e pergunta só da que faltou, citando o número', async () => {
+test('3 fotos: pergunta loja para todas e permite informar vendedor quando ele não foi lido', async () => {
   const leituras = { 'https://midia/1': LEU_TUDO, 'https://midia/2': NADA, 'https://midia/3': { ...LEU_TUDO, vendedor: 'Pedro' } };
   const t = montar({ extracao: url => leituras[url] });
   await Promise.all([foto(t, 1), foto(t, 2), foto(t, 3)]);
-  await esperar(() => perguntando(t) === 2);
+  await esperar(() => perguntando(t) === 1);
 
   const msgs = cliente(t.enviados);
   assert.match(msgs[0], /Recebi 3 notas/);
-  assert.match(msgs[1], /Anotei ✅ 2 notas/);
-  assert.doesNotMatch(msgs[1], /PRONTO/, 'não pede "mais notas" enquanto há pergunta');
-  assert.match(msgs.at(-1), /Nota 2: não consegui ler a \*loja\* e o \*vendedor\*/);
-  assert.equal(t.rascunhos.length, 2, 'a nota 2 espera a resposta');
-
+  assert.match(msgs.at(-1), /Nota 1: identifiquei o vendedor como \*João\*/);
+  await texto(t, 'ATN');
+  await esperar(() => perguntando(t) === 2);
+  assert.match(cliente(t.enviados).at(-1), /Nota 2: qual é o \*nome da loja\*/);
   await texto(t, 'Star Company - Maria');
+  await esperar(() => perguntando(t) === 3);
+  await texto(t, 'Outra');
   await esperar(() => t.rascunhos.length === 3);
-  assert.match(cliente(t.enviados).at(-1), /Anotei ✅ Nota 2: \*Star Company\* · Maria/);
+  assert.deepEqual(t.rascunhos.map(r => r.nome_loja), ['ATN', 'Star Company', 'Outra']);
   assert.match(cliente(t.enviados).at(-1), /PRONTO/);
 });
 
@@ -196,11 +201,11 @@ test('3 fotos sem dados: pergunta uma nota por vez, na ordem', async () => {
   const t = montar({ extracao: NADA });
   await Promise.all([foto(t, 1), foto(t, 2), foto(t, 3)]);
   await esperar(() => perguntando(t) === 1);
-  assert.match(cliente(t.enviados).at(-1), /Nota 1: não consegui ler/);
+  assert.match(cliente(t.enviados).at(-1), /Nota 1: qual é o \*nome da loja\*/);
 
   await texto(t, 'atn - João');
   await esperar(() => perguntando(t) === 2);
-  assert.match(cliente(t.enviados).at(-1), /Nota 2: não consegui ler/);
+  assert.match(cliente(t.enviados).at(-1), /Nota 2: qual é o \*nome da loja\*/);
   assert.equal(t.rascunhos.length, 1);
 
   await texto(t, 'Star Company - Maria');
@@ -217,14 +222,16 @@ test('foto nova durante uma pergunta é aceita (não é descartada)', async () =
   await foto(t, 1);
   await esperar(() => perguntando(t) === 1);
   await foto(t, 2);
-  await esperar(() => t.rascunhos.length === 1); // a nota 2 foi lida e registrada
+  await esperar(() => t.conversa()?.dados?.pendentes?.length === 2);
   assert.equal(perguntando(t), 1, 'a pergunta da nota 1 continua valendo');
   assert.equal(t.conversa().dados.count, 2);
   await texto(t, 'Star Company - Maria');
+  await esperar(() => perguntando(t) === 2);
+  await texto(t, 'ATN');
   await esperar(() => t.rascunhos.length === 2);
 });
 
-test('PRONTO enquanto ainda lê: fecha sozinho assim que terminar', async () => {
+test('PRONTO enquanto ainda lê: confirma a loja antes de fechar', async () => {
   let liberar;
   const lenta = new Promise(r => { liberar = r; });
   const t = montar({ extracao: async () => { await lenta; return LEU_TUDO; } });
@@ -232,6 +239,9 @@ test('PRONTO enquanto ainda lê: fecha sozinho assim que terminar', async () => 
   await texto(t, 'PRONTO');
   assert.match(cliente(t.enviados).at(-1), /Assim que eu terminar de ler/);
   liberar();
+  await esperar(() => perguntando(t) === 1);
+  assert.match(cliente(t.enviados).at(-1), /qual é o \*nome da loja\*/);
+  await texto(t, 'ATN');
   await esperar(() => t.conversa() === null);
   assert.equal(t.rascunhos.length, 1);
   assert.match(cliente(t.enviados).at(-1), /Recebemos 1 nota nesta retirada/);
@@ -240,8 +250,12 @@ test('PRONTO enquanto ainda lê: fecha sozinho assim que terminar', async () => 
 test('PRONTO depois de registrar tudo encerra com a contagem', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await foto(t, 1);
+  await esperar(() => perguntando(t) === 1);
+  await texto(t, 'ATN');
   await esperar(() => t.rascunhos.length === 1);
   await foto(t, 2);
+  await esperar(() => perguntando(t) === 2);
+  await texto(t, 'Star Company');
   await esperar(() => t.rascunhos.length === 2);
   assert.ok(cliente(t.enviados).some(x => /Recebi mais uma nota ✅/.test(x)));
   await texto(t, 'PRONTO');
@@ -299,12 +313,15 @@ test('cliente esperando etiqueta: a foto não é tratada como nota', async () =>
   assert.ok(!cliente(t.enviados).some(x => /Recebi sua nota/.test(x)));
 });
 
-test('menu opção 1 pede só a foto; o resto o bot lê da nota', async () => {
+test('menu opção 1 avisa que confirmará a loja depois da leitura', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await texto(t, '1');
   assert.match(cliente(t.enviados)[0], /Pode enviar a foto, print ou PDF/);
+  assert.match(cliente(t.enviados)[0], /vou pedir o \*nome da loja\*/);
   assert.equal(t.conversa().estado, 'flow1_notas');
   await foto(t);
+  await esperar(() => perguntando(t) === 1);
+  await texto(t, 'ATN');
   await esperar(() => t.rascunhos.length === 1);
   assert.equal(t.rascunhos[0].nome_loja, 'ATN');
 });
@@ -348,6 +365,8 @@ test('depois do "oi", a foto da nota funciona normalmente', async () => {
   const t = montar({ extracao: LEU_TUDO });
   await texto(t, 'oi');
   await foto(t);
+  await esperar(() => perguntando(t) === 1);
+  await texto(t, 'ATN');
   await esperar(() => t.rascunhos.length === 1);
   assert.equal(t.rascunhos[0].nome_loja, 'ATN');
 });

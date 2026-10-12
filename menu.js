@@ -328,9 +328,9 @@ async function iniciarFlow1(phone) {
     return;
   }
 
-  // Basta a foto: loja e produtos são lidos da própria nota.
   await sendText(phone,
     'Pode enviar a foto, print ou PDF da nota fiscal. 📄\n\n' +
+    'Depois da leitura, vou pedir o *nome da loja* para confirmar.\n\n' +
     'Se tiver mais de uma nota, envie uma de cada vez. Quando terminar, responda *PRONTO*.',
     true);
   await setConversa(phone, { estado: 'flow1_notas', dados: dadosVaziosNotas() });
@@ -338,8 +338,8 @@ async function iniciarFlow1(phone) {
 
 // ══ Envio de notas pelo WhatsApp ═════════════════════════════════════════════
 // O cliente manda a(s) foto(s). Cada foto vira uma nota numerada e é lida em
-// paralelo. Loja e vendedor vêm da leitura; só o que a leitura não achar é
-// perguntado ao cliente, uma nota por vez. Estado único: flow1_notas, com
+// paralelo. O vendedor pode vir da leitura, mas a loja é sempre confirmada pelo
+// cliente, uma nota por vez. Estado único: flow1_notas, com
 //   dados = { count, pendentes: [{ n, mediaUrl, mimeType, rawContent, loja, vendedor, fase }],
 //             resumo: [{ n, loja, vendedor }], perguntando: n|null, finalizar: bool }
 // fase: 'lendo' | 'aguardando_info'. Notas já registradas saem de `pendentes`.
@@ -485,9 +485,9 @@ async function descarregarConfirmacao(phone) {
 function perguntaFaltante(nota, numerar) {
   const frase = txt => (numerar ? `Nota ${nota.n}: ${txt}` : txt[0].toUpperCase() + txt.slice(1));
   if (!nota.loja && !nota.vendedor) {
-    return `${frase('não consegui ler a *loja* e o *vendedor*. 😅')}\nPode me dizer numa mensagem só? Por exemplo: *ATN - João*`;
+    return `${frase('qual é o *nome da loja*?')}\nSe souber o vendedor, pode mandar junto. Por exemplo: *ATN - João*`;
   }
-  if (!nota.loja) return frase(`li o vendedor (*${nota.vendedor}*), mas não consegui ler a *loja*. Qual é o nome da loja?`);
+  if (!nota.loja) return frase(`identifiquei o vendedor como *${nota.vendedor}*. Para confirmar corretamente, qual é o *nome da loja*?`);
   return frase(`li a loja *${nota.loja}*, mas não consegui ler o *vendedor*. Qual é o nome do vendedor?`);
 }
 
@@ -540,8 +540,8 @@ async function avancar(phone, dados) {
 
 // ── recebimento da foto e leitura ────────────────────────────────────────────
 
-// Resultado da leitura chega aqui (dentro da fila): registra a nota se achou
-// tudo, ou a deixa aguardando a resposta do cliente.
+// Resultado da leitura chega aqui (dentro da fila). A loja extraída não é usada:
+// o cliente sempre informa o nome correto antes do registro.
 async function aplicarLeitura(phone, n, leitura) {
   await descarregarConfirmacao(phone);
   const conv = await getConversa(phone);
@@ -550,19 +550,10 @@ async function aplicarLeitura(phone, n, leitura) {
   const nota = dados.pendentes.find(p => p.n === n);
   if (!nota) return;
 
-  const configuracoes = await getConfiguracoes();
-  nota.loja = padronizarNomeLoja(leitura?.loja || '', configuracoes.lojasPadronizadas);
+  nota.loja = '';
   nota.vendedor = String(leitura?.vendedor || '').trim();
   leituras.set(chaveLeitura(phone, n), leitura);
-
-  if (nota.loja && nota.vendedor) {
-    processarNota(phone, { ...nota, leitura }, n); // não bloqueia
-    leituras.delete(chaveLeitura(phone, n));
-    dados.pendentes = dados.pendentes.filter(p => p.n !== n);
-    dados.resumo.push({ n, loja: nota.loja, vendedor: nota.vendedor });
-  } else {
-    nota.fase = 'aguardando_info';
-  }
+  nota.fase = 'aguardando_info';
   await avancar(phone, dados);
 }
 
