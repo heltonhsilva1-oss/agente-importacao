@@ -409,7 +409,9 @@ function setupAgendamentos() {
 
   // Toda manhã às 8h — fila + resumo + alerta urgente comissão (segunda)
   cron.schedule('30 3 * * *',  () => r(jobBackupDiario),             { timezone: TZ });
-  cron.schedule('0 8 * * *',   () => r(jobMensagensAgendadas),       { timezone: TZ });
+  // A fila também recebe mensagens enviadas pelo painel administrativo.
+  // Processar a cada 5 minutos evita que broadcasts fiquem aguardando até o dia seguinte.
+  cron.schedule('*/5 * * * *', () => r(jobMensagensAgendadas),       { timezone: TZ });
   cron.schedule('0 8 * * *',   () => r(jobResumoMatinal),            { timezone: TZ });
   cron.schedule('0 8 * * 1',   () => r(jobAlertaUrgenteComissao),    { timezone: TZ }); // segunda
 
