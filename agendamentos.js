@@ -410,8 +410,14 @@ function setupAgendamentos() {
   // Toda manhã às 8h — fila + resumo + alerta urgente comissão (segunda)
   cron.schedule('30 3 * * *',  () => r(jobBackupDiario),             { timezone: TZ });
   // A fila também recebe mensagens enviadas pelo painel administrativo.
-  // Processar a cada 5 minutos evita que broadcasts fiquem aguardando até o dia seguinte.
-  cron.schedule('*/5 * * * *', () => r(jobMensagensAgendadas),       { timezone: TZ });
+  // O listener dispara o envio assim que o documento é criado; o cron das 8h
+  // permanece apenas como recuperação de mensagens que falharam ou ficaram
+  // pendentes enquanto o backend estava reiniciando.
+  getFirestore().collection('mensagens_agendadas')
+    .where('status', '==', 'pendente')
+    .onSnapshot(() => r(jobMensagensAgendadas), error =>
+      logger.error('[agend] Listener da fila de mensagens falhou:', error.message));
+  cron.schedule('0 8 * * *',   () => r(jobMensagensAgendadas),       { timezone: TZ });
   cron.schedule('0 8 * * *',   () => r(jobResumoMatinal),            { timezone: TZ });
   cron.schedule('0 8 * * 1',   () => r(jobAlertaUrgenteComissao),    { timezone: TZ }); // segunda
 
