@@ -79,18 +79,27 @@ async function sendMedia(phone, mediaUrl, mimeType, caption = '', forceNow = fal
         mimeType.includes('document') ||
         mimeType.includes('octet-stream'));
 
-    if (isPdf) {
-      await axios.post(
-        `${url}/send/document`,
-        { number: phone, document: mediaUrl, filename: 'documento.pdf', caption },
-        { headers: headers(), timeout: 20000 }
-      );
-    } else {
-      await axios.post(
-        `${url}/send/image`,
-        { number: phone, image: mediaUrl, caption },
-        { headers: headers(), timeout: 20000 }
-      );
+    try {
+      if (isPdf) {
+        await axios.post(`${url}/send/document`,
+          { number: phone, document: mediaUrl, filename: 'documento.pdf', caption },
+          { headers: headers(), timeout: 20000 });
+      } else {
+        await axios.post(`${url}/send/image`,
+          { number: phone, image: mediaUrl, caption },
+          { headers: headers(), timeout: 20000 });
+      }
+    } catch (legacyError) {
+      // UazapiGO atual usa o endpoint unificado /send/media. Mantemos o
+      // formato antigo como primeira tentativa para instâncias legadas.
+      if (legacyError.response?.status !== 405) throw legacyError;
+      await axios.post(`${url}/send/media`, {
+        number: phone,
+        type: isPdf ? 'document' : 'image',
+        file: mediaUrl,
+        text: caption,
+        ...(isPdf ? { docName: 'documento.pdf' } : {}),
+      }, { headers: headers(), timeout: 20000 });
     }
     logger.info(`[uazapi] Mídia enviada → ${phone}`);
   } catch (err) {
