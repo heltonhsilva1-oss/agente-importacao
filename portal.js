@@ -60,6 +60,7 @@ function sanitizeCliente(cliente) {
   return {
     id: cliente.id,
     nome: cliente.nome || cliente.name || 'Cliente',
+    saldo_comissao_brl: Math.max(0, Number(cliente.saldo_comissao_brl) || 0),
   };
 }
 
