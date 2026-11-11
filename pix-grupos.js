@@ -88,6 +88,10 @@ async function confirmarGrupo(chargeRef, db = getFirestore()) {
       }
       return { ref: snap.ref, pedido, cobranca, status, extras, item };
     });
+    const creditoUsadoEstimado = charge.itens.reduce((s, item) => s + (Number(item.credito_aplicado) || 0), 0);
+    const clienteSnap = creditoUsadoEstimado > 0
+      ? await tx.get(db.collection('clientes').where('id', '==', Number(charge.cliente_id)).limit(1))
+      : null;
     const agora = new Date();
     const pagos = resultados.map(({ ref, pedido, cobranca, status, extras, item }) => {
       tx.update(ref, { [cobranca.campoPagamento]: 'pago', status,
@@ -98,15 +102,10 @@ async function confirmarGrupo(chargeRef, db = getFirestore()) {
         valorComissaoAntecipada: extras.valor_comissao_antecipada_brl || null };
     });
     tx.update(chargeRef, { status: 'pago', itens: pagos, pago_em: Timestamp.now(), atualizado_em: Timestamp.now() });
-    const creditoUsado = pagos.reduce((s, item) => s + (Number(item.credito_aplicado) || 0), 0);
-    if (creditoUsado > 0) {
-      const clienteQuery = db.collection('clientes').where('id', '==', Number(charge.cliente_id)).limit(1);
-      const clienteSnap = await tx.get(clienteQuery);
-      if (!clienteSnap.empty) {
+    if (creditoUsadoEstimado > 0 && clienteSnap && !clienteSnap.empty) {
         const clienteRef = clienteSnap.docs[0].ref;
         const saldoAtual = Number(clienteSnap.docs[0].data().saldo_comissao_brl) || 0;
-        tx.update(clienteRef, { saldo_comissao_brl: Math.max(0, Math.round((saldoAtual - creditoUsado) * 100) / 100) });
-      }
+        tx.update(clienteRef, { saldo_comissao_brl: Math.max(0, Math.round((saldoAtual - creditoUsadoEstimado) * 100) / 100) });
     }
     return { paid: true };
   });
