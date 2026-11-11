@@ -510,11 +510,6 @@ function setupMercadoPago(app) {
       ]);
       const clienteDoc = clienteNumero.docs[0] || clienteTexto.docs[0];
       const cliente = clienteDoc ? clienteDoc.data() : null;
-      const cobranca = getCobrancaPendente(found.data, cliente);
-      if (!cobranca || cobranca.valor < 0.01) {
-        res.status(409).json({ ok: false, error: 'no_pending_charge' });
-        return;
-      }
       let grupo;
       if (Array.isArray(req.body?.pedidoIds)) {
         const ids = req.body.pedidoIds;
@@ -525,6 +520,21 @@ function setupMercadoPago(app) {
           return;
         }
         grupo = { encontrados, ids, clienteId: session.clienteId };
+      }
+      const cobranca = getCobrancaPendente(found.data, cliente);
+      if (!grupo && (!cobranca || cobranca.valor < 0.01)) {
+        res.status(409).json({ ok: false, error: 'no_pending_charge' });
+        return;
+      }
+      if (grupo) {
+        const existeSaldo = grupo.encontrados.some(item => {
+          const pendente = getCobrancaPendente(item.data, cliente);
+          return pendente && pendente.valor >= 0.01;
+        });
+        if (!existeSaldo) {
+          res.status(409).json({ ok: false, error: 'no_pending_charge' });
+          return;
+        }
       }
       const charge = await createPixCharge({ pedido: found.data, cobranca, email, grupo });
       res.json({ ok: true, charge });
