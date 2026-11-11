@@ -10,9 +10,9 @@ function selecionarGrupo(pedidos, ids, clienteId, cliente = null) {
   }
   const itens = ids.map(id => pedidos.find(p => String(p.id) === String(id)));
   if (itens.some(p => !p || String(p.cliente_id) !== String(clienteId))) throw new Error('order_not_found');
-  const primeiro = itens[0];
-  const tipo = getCobrancaPendente(primeiro)?.tipo;
-  if (primeiro.viagem_id == null || !tipo) throw new Error('no_pending_charge');
+  const primeiro = itens.find(p => getCobrancaPendente(p));
+  const tipo = primeiro ? getCobrancaPendente(primeiro)?.tipo : null;
+  if (!primeiro || primeiro.viagem_id == null || !tipo) throw new Error('no_pending_charge');
   let creditoRestante = Math.max(0, Number(cliente?.saldo_comissao_brl) || 0);
   const detalhes = itens.sort((a, b) => Number(a.id) - Number(b.id)).map(p => {
     const cobranca = getCobrancaPendente(p);
