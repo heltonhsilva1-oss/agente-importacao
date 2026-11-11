@@ -29,7 +29,8 @@ function selecionarGrupo(pedidos, ids, clienteId, cliente = null) {
 }
 
 async function reservarGrupo({ encontrados, ids, clienteId, email, db = getFirestore() }) {
-  const clienteSnap = await db.collection('clientes').where('id', '==', Number(clienteId)).limit(1).get();
+  const clienteQuery = db.collection('clientes').where('id', '==', Number(clienteId)).limit(1);
+  const clienteSnap = typeof clienteQuery.get === 'function' ? await clienteQuery.get() : { empty: true, docs: [] };
   const cliente = clienteSnap.empty ? null : clienteSnap.docs[0].data();
   return db.runTransaction(async tx => {
     const snapshots = await Promise.all(encontrados.map(p => tx.get(p.ref)));
@@ -70,10 +71,11 @@ async function confirmarGrupo(chargeRef, db = getFirestore()) {
       const snap = encontrados[i].docs[0];
       if (!snap) throw new Error('order_not_found');
       const pedido = snap.data();
-      const cobrancaBase = getCobrancaPendente(pedido);
-      const cobranca = cobrancaBase ? { ...cobrancaBase, valor: Number(item.valor) } : null;
+      const cobranca = getCobrancaPendente(pedido);
+      const creditoAplicado = Number(item.credito_aplicado) || 0;
+      const valorEsperado = Math.round((Number(item.valor) + creditoAplicado) * 100) / 100;
       if (String(pedido.cliente_id) !== charge.cliente_id || String(pedido.viagem_id) !== charge.viagem_id
-        || !cobranca || cobranca.tipo !== charge.tipo || Math.round(cobranca.valor * 100) !== Math.round(item.valor * 100)) {
+        || !cobranca || cobranca.tipo !== charge.tipo || Math.round(cobranca.valor * 100) !== Math.round(valorEsperado * 100)) {
         throw new Error(`payment_group_changed:${item.pedido_id}`);
       }
       const extras = {};
