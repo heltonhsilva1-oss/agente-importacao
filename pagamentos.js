@@ -30,8 +30,9 @@ function getValorComissaoAntecipada(pedido) {
 function getSaldoComissao(pedidoOriginal, cliente = null) {
   const pedido = aplicarTotaisConfiaveis(pedidoOriginal) || pedidoOriginal;
   const total = arredondarCentavos(pedido?.total_comissao_brl);
-  if (getStatusPagamento(pedido, 'comissao_antecipada') !== PAGAMENTO_PAGO) return total;
-  const saldo = Math.max(0, arredondarCentavos(total - getValorComissaoAntecipada(pedido)));
+  const antecipacao = getStatusPagamento(pedido, 'comissao_antecipada') === PAGAMENTO_PAGO
+    ? getValorComissaoAntecipada(pedido) : 0;
+  const saldo = Math.max(0, arredondarCentavos(total - antecipacao));
   const credito = Math.max(0, Number(cliente?.saldo_comissao_brl) || 0);
   return Math.max(0, arredondarCentavos(saldo - credito));
 }
