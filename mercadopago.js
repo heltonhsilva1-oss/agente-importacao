@@ -503,8 +503,13 @@ function setupMercadoPago(app) {
         res.status(404).json({ ok: false, error: 'order_not_found' });
         return;
       }
-      const clienteSnap = await getFirestore().collection('clientes').doc(String(session.clienteId)).get();
-      const cliente = clienteSnap.exists ? clienteSnap.data() : null;
+      const clienteCol = getFirestore().collection('clientes');
+      const [clienteNumero, clienteTexto] = await Promise.all([
+        clienteCol.where('id', '==', Number(session.clienteId)).limit(1).get(),
+        clienteCol.where('id', '==', String(session.clienteId)).limit(1).get(),
+      ]);
+      const clienteDoc = clienteNumero.docs[0] || clienteTexto.docs[0];
+      const cliente = clienteDoc ? clienteDoc.data() : null;
       const cobranca = getCobrancaPendente(found.data, cliente);
       if (!cobranca || cobranca.valor < 0.01) {
         res.status(409).json({ ok: false, error: 'no_pending_charge' });
