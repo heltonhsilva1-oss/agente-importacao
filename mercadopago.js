@@ -529,9 +529,14 @@ function setupMercadoPago(app) {
       const charge = await createPixCharge({ pedido: found.data, cobranca, email, grupo });
       res.json({ ok: true, charge });
     } catch (error) {
-      logger.error('[mercadopago] Falha ao criar Pix:', JSON.stringify(error.response?.data || { message: error.message }));
+      const detalhe = String(error.response?.data?.message || error.message || 'pix_creation_failed').slice(0, 300);
+      logger.error('[mercadopago] Falha ao criar Pix:', JSON.stringify({ detalhe, provider: error.response?.data || null }));
       const conflito = ['active_payment_conflict', 'payment_group_changed', 'no_pending_charge'].includes(error.message);
-      res.status(conflito ? 409 : error.status || 502).json({ ok: false, error: conflito ? error.message : 'pix_creation_failed' });
+      res.status(conflito ? 409 : error.status || 502).json({
+        ok: false,
+        error: conflito ? error.message : 'pix_creation_failed',
+        detail: conflito ? error.message : detalhe,
+      });
     }
   });
 
