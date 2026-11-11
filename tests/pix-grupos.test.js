@@ -6,6 +6,17 @@ const { selecionarGrupo, reservarGrupo, confirmarGrupo } = require('../pix-grupo
 const pedido = (id, extras = {}) => ({ id, cliente_id: 1, viagem_id: 9,
   status: 'aguardando_pgto_travessia', total_travessia_brl: 12.35, total_comissao_brl: 50, ...extras });
 
+test('crédito único preserva pedidos cobertos e cobra somente o líquido do grupo', () => {
+  const pedidos = [158.60, 158.60, 170.44].map((valor, i) => pedido(i + 1, {
+    status: 'aguardando_pgto_comissao', total_comissao_brl: valor,
+  }));
+  const grupo = selecionarGrupo(pedidos, [1, 2, 3], '1', { saldo_comissao_brl: 283.33 });
+  assert.equal(grupo.valor, 204.31);
+  assert.equal(grupo.itens.length, 3);
+  assert.deepEqual(grupo.itens.map(i => i.valor), [0, 33.87, 170.44]);
+  assert.equal(Math.round(grupo.itens.reduce((s, i) => s + i.credito_aplicado, 0) * 100), 28333);
+});
+
 function banco(dados) {
   const docs = new Map(Object.entries(dados));
   let writes = [];

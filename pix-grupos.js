@@ -23,7 +23,7 @@ function selecionarGrupo(pedidos, ids, clienteId, cliente = null) {
     creditoRestante = Math.max(0, Math.round((creditoRestante - desconto) * 100) / 100);
     return { pedido_id: Number(p.id), valor: Math.round((cobranca.valor - desconto) * 100) / 100,
       credito_aplicado: Math.round(desconto * 100) / 100 };
-  }).filter(item => item.valor >= 0.01);
+  });
   return { cliente_id: String(clienteId), viagem_id: String(primeiro.viagem_id), tipo,
     itens: detalhes, valor: detalhes.reduce((s, p) => s + Math.round(p.valor * 100), 0) / 100 };
 }
@@ -35,6 +35,7 @@ async function reservarGrupo({ encontrados, ids, clienteId, email, db = getFires
   return db.runTransaction(async tx => {
     const snapshots = await Promise.all(encontrados.map(p => tx.get(p.ref)));
     const grupo = selecionarGrupo(snapshots.filter(s => s.exists).map(s => s.data()), ids, clienteId, cliente);
+    if (grupo.valor < 0.01) throw new Error('no_pending_charge');
     const locks = grupo.itens.map(p => db.collection('cobrancas_pix').doc(`${p.pedido_id}_${grupo.tipo}`));
     const existentes = await Promise.all(locks.map(ref => tx.get(ref)));
     const vinculados = existentes.filter(s => s.exists && s.data().grupo_id);

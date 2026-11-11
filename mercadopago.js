@@ -526,16 +526,6 @@ function setupMercadoPago(app) {
         res.status(409).json({ ok: false, error: 'no_pending_charge' });
         return;
       }
-      if (grupo) {
-        const existeSaldo = grupo.encontrados.some(item => {
-          const pendente = getCobrancaPendente(item.data, cliente);
-          return pendente && pendente.valor >= 0.01;
-        });
-        if (!existeSaldo) {
-          res.status(409).json({ ok: false, error: 'no_pending_charge' });
-          return;
-        }
-      }
       const charge = await createPixCharge({ pedido: found.data, cobranca, email, grupo });
       res.json({ ok: true, charge });
     } catch (error) {
