@@ -503,7 +503,9 @@ function setupMercadoPago(app) {
         res.status(404).json({ ok: false, error: 'order_not_found' });
         return;
       }
-      const cobranca = getCobrancaPendente(found.data);
+      const clienteSnap = await getFirestore().collection('clientes').doc(String(session.clienteId)).get();
+      const cliente = clienteSnap.exists ? clienteSnap.data() : null;
+      const cobranca = getCobrancaPendente(found.data, cliente);
       if (!cobranca || cobranca.valor < 0.01) {
         res.status(409).json({ ok: false, error: 'no_pending_charge' });
         return;

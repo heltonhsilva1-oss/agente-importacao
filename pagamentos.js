@@ -27,14 +27,16 @@ function getValorComissaoAntecipada(pedido) {
   return arredondarCentavos((Number(pedido?.total_comissao_brl) || 0) * percentual / 100);
 }
 
-function getSaldoComissao(pedidoOriginal) {
+function getSaldoComissao(pedidoOriginal, cliente = null) {
   const pedido = aplicarTotaisConfiaveis(pedidoOriginal) || pedidoOriginal;
   const total = arredondarCentavos(pedido?.total_comissao_brl);
   if (getStatusPagamento(pedido, 'comissao_antecipada') !== PAGAMENTO_PAGO) return total;
-  return Math.max(0, arredondarCentavos(total - getValorComissaoAntecipada(pedido)));
+  const saldo = Math.max(0, arredondarCentavos(total - getValorComissaoAntecipada(pedido)));
+  const credito = Math.max(0, Number(cliente?.saldo_comissao_brl) || 0);
+  return Math.max(0, arredondarCentavos(saldo - credito));
 }
 
-function getCobrancaPendente(pedidoOriginal) {
+function getCobrancaPendente(pedidoOriginal, cliente = null) {
   if (!pedidoOriginal) return null;
   // Pedido Free: totais recalculados no backend; inconsistente = sem cobrança.
   const pedido = aplicarTotaisConfiaveis(pedidoOriginal);
@@ -70,7 +72,7 @@ function getCobrancaPendente(pedidoOriginal) {
   ) {
     return {
       tipo: 'comissao',
-      valor: getSaldoComissao(pedido),
+      valor: getSaldoComissao(pedido, cliente),
       proximoStatus: 'aguardando_etiqueta',
       campoPagamento: 'pagamento_comissao',
     };
