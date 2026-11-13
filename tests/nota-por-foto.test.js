@@ -306,11 +306,18 @@ test('depois do corte da viagem a foto não vira nota', async () => {
   assert.equal(t.rascunhos.length, 0);
 });
 
-test('cliente esperando etiqueta: a foto não é tratada como nota', async () => {
-  const t = montar({ extracao: LEU_TUDO, pedidosAtivos: [{ id: 9, status: 'aguardando_etiqueta' }] });
+test('pedido esperando etiqueta não descarta a nota enviada fora de um fluxo ativo', async () => {
+  const lidas = [];
+  const t = montar({ extracao: url => { lidas.push(url); return LEU_TUDO; }, pedidosAtivos: [{ id: 9, status: 'aguardando_etiqueta' }] });
   await foto(t);
-  assert.equal(t.rascunhos.length, 0);
-  assert.ok(!cliente(t.enviados).some(x => /Recebi sua nota/.test(x)));
+  await esperar(() => perguntando(t) === 1);
+  assert.deepEqual(lidas, ['https://midia/1']);
+  assert.ok(!cliente(t.enviados).some(x => /Pode enviar a foto, print ou PDF/.test(x)));
+  await texto(t, 'Pronto');
+  assert.equal(perguntando(t), 1, 'PRONTO não descarta a nota que precisa de confirmação');
+  await texto(t, 'ATN');
+  await esperar(() => t.rascunhos.length === 1);
+  assert.equal(t.rascunhos[0].extracao_status, 'ok');
 });
 
 test('sem menu, qualquer contato fora de etapa orienta o envio da nota', async () => {

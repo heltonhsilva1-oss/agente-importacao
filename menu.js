@@ -1210,16 +1210,13 @@ async function handleMessage(phone, tipo, body, mediaUrl, mimeType, rawContent =
     return;
   }
 
-  // Mandou a foto da nota direto (sem escolher opção): registra como nota. Se o
-  // cliente está esperando para enviar etiqueta, mantém o comportamento antigo
-  // para não confundir etiqueta com nota.
+  // Fora de um fluxo ativo, a própria imagem inicia o recebimento da nota.
+  // Pedidos antigos aguardando etiqueta não podem descartar a primeira foto.
+  // A etiqueta continua sendo tratada no estado explícito flow4_etiqueta.
   if (mediaUrl && ['image', 'document'].includes(String(tipo || '').toLowerCase()) && ['idle', 'menu'].includes(estado)) {
-    const pedidosAtivos = await getPedidosAtivos(clienteCadastrado.id);
-    if (!pedidosAtivos.some(p => p.status === 'aguardando_etiqueta')) {
-      saveUserMsg(normalPhone, bodyNorm || '[nota enviada]');
-      await receberNotaPorFoto(normalPhone, { mediaUrl, mimeType, rawContent });
-      return;
-    }
+    saveUserMsg(normalPhone, bodyNorm || '[nota enviada]');
+    await receberNotaPorFoto(normalPhone, { mediaUrl, mimeType, rawContent });
+    return;
   }
 
   // Fluxos ativos
